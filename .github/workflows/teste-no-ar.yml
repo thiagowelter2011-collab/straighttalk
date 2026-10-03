@@ -1,0 +1,29 @@
+name: Teste no ar
+
+# Abre o site publicado com 3 pessoas (navegadores de verdade) e testa chat, voz e tela.
+# Cria contas de teste (anaXXXX, biaXXXX, caioXXXX) e apaga o servidor de teste no fim.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Endereço do site (vazio usa STRAIGHTTALK_URL ou o do Render)'
+        required: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --no-save playwright && npx playwright install --with-deps chromium
+      - run: mkdir -p prints && node test/e2e.js "$URL" prints
+        env:
+          URL: ${{ inputs.url || vars.STRAIGHTTALK_URL || 'https://straighttalk.onrender.com' }}
+          E2E_CLEANUP: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prints
+          path: prints

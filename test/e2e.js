@@ -98,6 +98,11 @@ const tag = Date.now().toString(36);
   await bia.waitForFunction(() => document.querySelectorAll('#stage .tile.person').length === 2, null, { timeout: 5000 });
   console.log('sair da voz ok');
   console.log('erros no console:', errors.length ? errors.slice(0, 8) : 'nenhum');
+  if (process.env.E2E_CLEANUP) {
+    // No site de verdade: apaga o servidor de teste (as contas ana/bia/caio de teste ficam)
+    await ana.evaluate(() => fetch(`/api/servers/${S.serverId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${S.token}` } }));
+    console.log('servidor de teste apagado');
+  }
   await browser.close();
   if (!info.screen.length || info.audios < 2) process.exit(1);
 })().catch((e) => { console.error('FALHOU', e); process.exit(1); });
