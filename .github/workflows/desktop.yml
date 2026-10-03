@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       server_url:
-        description: Endereço do servidor que o app abre por padrão (ex.: https://1-2-3-4.sslip.io)
+        description: 'Endereço do servidor que o app abre por padrão, ex. https://1-2-3-4.sslip.io'
         required: false
   push:
     tags: ['v*']
