@@ -28,7 +28,7 @@ jobs:
       - name: Endereço padrão do servidor
         shell: bash
         env:
-          SERVER_URL: ${{ inputs.server_url || vars.STRAIGHTTALK_URL }}
+          SERVER_URL: ${{ inputs.server_url || vars.STRAIGHTTALK_URL || 'https://straighttalk.onrender.com' }}
         run: |
           if [ -n "$SERVER_URL" ]; then
             node -e "const f='package.json',p=require('./'+f);p.straighttalk.serverUrl=process.env.SERVER_URL;require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
