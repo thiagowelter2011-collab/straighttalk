@@ -29,9 +29,12 @@ class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
-function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data', 'straighttalk.db') } = {}) {
-  const db = openDb(dbFile);
-  const q = (sql) => db.prepare(sql);
+function createApp({
+  dbFile = process.env.DB_FILE || path.join(__dirname, 'data', 'straighttalk.db'),
+  dbUrl = process.env.DATABASE_URL,
+  dbToken = process.env.DATABASE_AUTH_TOKEN,
+} = {}) {
+  const db = openDb({ file: dbFile, url: dbUrl, authToken: dbToken });
   const now = () => Date.now();
 
   /* ---------------- Senhas e sessões ---------------- */
@@ -48,82 +51,82 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
     return crypto.timingSafeEqual(hash, Buffer.from(hashHex, 'hex'));
   }
 
-  function newSession(userId) {
+  async function newSession(userId) {
     const token = crypto.randomBytes(32).toString('hex');
-    q('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)').run(token, userId, now());
+    await db.run('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)', token, userId, now());
     return token;
   }
 
-  function userFromToken(token) {
+  async function userFromToken(token) {
     if (!token) return null;
-    return q(`SELECT u.id, u.username, u.display_name AS displayName
-              FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`).get(String(token)) || null;
+    return (await db.get(`SELECT u.id, u.username, u.display_name AS displayName
+              FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, String(token))) || null;
   }
 
   /* ---------------- Consultas ---------------- */
 
   const inviteCode = () => crypto.randomBytes(6).toString('base64url');
 
-  function serverRow(id) {
-    return q('SELECT id, name, owner_id AS ownerId, invite_code AS inviteCode FROM servers WHERE id = ?').get(id);
+  async function serverRow(id) {
+    return await db.get('SELECT id, name, owner_id AS ownerId, invite_code AS inviteCode FROM servers WHERE id = ?', id);
   }
 
-  function isMember(serverId, userId) {
-    return !!q('SELECT 1 FROM members WHERE server_id = ? AND user_id = ?').get(serverId, userId);
+  async function isMember(serverId, userId) {
+    return !!await db.get('SELECT 1 FROM members WHERE server_id = ? AND user_id = ?', serverId, userId);
   }
 
-  function requireMember(serverId, user) {
-    const s = serverRow(serverId);
-    if (!s || !isMember(serverId, user.id)) throw new HttpError(404, 'Servidor não encontrado.');
+  async function requireMember(serverId, user) {
+    const s = await serverRow(serverId);
+    if (!s || !(await isMember(serverId, user.id))) throw new HttpError(404, 'Servidor não encontrado.');
     return s;
   }
 
-  function requireOwner(serverId, user) {
-    const s = requireMember(serverId, user);
+  async function requireOwner(serverId, user) {
+    const s = await requireMember(serverId, user);
     if (s.ownerId !== user.id) throw new HttpError(403, 'Só o dono do servidor pode fazer isso.');
     return s;
   }
 
-  function channelRow(id) {
-    return q('SELECT id, server_id AS serverId, name, type, position FROM channels WHERE id = ?').get(id);
+  async function channelRow(id) {
+    return await db.get('SELECT id, server_id AS serverId, name, type, position FROM channels WHERE id = ?', id);
   }
 
-  function requireChannel(channelId, user) {
-    const c = channelRow(channelId);
-    if (!c || !isMember(c.serverId, user.id)) throw new HttpError(404, 'Canal não encontrado.');
+  async function requireChannel(channelId, user) {
+    const c = await channelRow(channelId);
+    if (!c || !(await isMember(c.serverId, user.id))) throw new HttpError(404, 'Canal não encontrado.');
     return c;
   }
 
-  function serverIdsOf(userId) {
-    return q('SELECT server_id AS id FROM members WHERE user_id = ?').all(userId).map((r) => r.id);
+  async function serverIdsOf(userId) {
+    return (await db.all('SELECT server_id AS id FROM members WHERE user_id = ?', userId)).map((r) => r.id);
   }
 
-  function listServers(userId) {
-    return q(`SELECT s.id, s.name, s.owner_id AS ownerId, s.invite_code AS inviteCode
+  async function listServers(userId) {
+    return await db.all(`SELECT s.id, s.name, s.owner_id AS ownerId, s.invite_code AS inviteCode
               FROM servers s JOIN members m ON m.server_id = s.id
-              WHERE m.user_id = ? ORDER BY m.joined_at`).all(userId);
+              WHERE m.user_id = ? ORDER BY m.joined_at`, userId);
   }
 
-  function serverDetail(serverId, viewerId) {
-    const s = serverRow(serverId);
-    const channels = q('SELECT id, name, type, position FROM channels WHERE server_id = ? ORDER BY type DESC, position, id').all(serverId);
-    const members = q(`SELECT u.id, u.username, u.display_name AS displayName
+  async function serverDetail(serverId, viewerId) {
+    const s = await serverRow(serverId);
+    const channels = await db.all('SELECT id, name, type, position FROM channels WHERE server_id = ? ORDER BY type DESC, position, id', serverId);
+    const members = (await db.all(`SELECT u.id, u.username, u.display_name AS displayName
                        FROM members m JOIN users u ON u.id = m.user_id
-                       WHERE m.server_id = ? ORDER BY u.display_name COLLATE NOCASE`).all(serverId)
+                       WHERE m.server_id = ? ORDER BY u.display_name COLLATE NOCASE`, serverId))
       .map((m) => ({ ...m, online: onlineUsers.has(m.id) }));
     if (s.ownerId !== viewerId) delete s.inviteCode;
     return { server: s, channels, members, voice: voiceSnapshot(serverId) };
   }
 
-  function createServer(name, owner) {
+  async function createServer(name, owner) {
     const t = now();
-    const { lastInsertRowid: id } = q('INSERT INTO servers (name, owner_id, invite_code, created_at) VALUES (?, ?, ?, ?)')
-      .run(name, owner.id, inviteCode(), t);
-    q('INSERT INTO members (server_id, user_id, joined_at) VALUES (?, ?, ?)').run(id, owner.id, t);
-    const addCh = q('INSERT INTO channels (server_id, name, type, position) VALUES (?, ?, ?, ?)');
-    addCh.run(id, 'geral', 'text', 0);
-    addCh.run(id, 'Bate Papo 1', 'voice', 0);
-    addCh.run(id, 'Bate Papo 2', 'voice', 1);
+    const { lastInsertRowid: id } = await db.run('INSERT INTO servers (name, owner_id, invite_code, created_at) VALUES (?, ?, ?, ?)', name, owner.id, inviteCode(), t);
+    await db.run('INSERT INTO members (server_id, user_id, joined_at) VALUES (?, ?, ?)', id, owner.id, t);
+    const addCh = 'INSERT INTO channels (server_id, name, type, position) VALUES (?, ?, ?, ?)';
+    await db.run(addCh, id, 'geral', 'text', 0);
+    await db.run(addCh, id, 'Bate Papo 1', 'voice', 0);
+    await db.run(addCh, id, 'Bate Papo 2', 'voice', 1);
+    memberCache.delete(id);
     return Number(id);
   }
 
@@ -155,9 +158,24 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
     if (conn.ws.readyState === conn.ws.OPEN) conn.ws.send(JSON.stringify(msg));
   }
 
-  function toServer(serverId, msg) {
-    const members = new Set(q('SELECT user_id AS id FROM members WHERE server_id = ?').all(serverId).map((r) => r.id));
-    for (const c of conns.values()) if (members.has(c.user.id)) send(c, msg);
+  // Quem é membro de cada servidor fica em memória, para os avisos em tempo real não esperarem o banco
+  const memberCache = new Map(); // serverId -> Promise<Set<userId>>
+
+  function membersOf(serverId) {
+    let p = memberCache.get(serverId);
+    if (!p) {
+      p = db.all('SELECT user_id AS id FROM members WHERE server_id = ?', serverId).then((rows) => new Set(rows.map((r) => r.id)));
+      p.catch(() => memberCache.delete(serverId));
+      memberCache.set(serverId, p);
+    }
+    return p;
+  }
+
+  async function toServer(serverId, msg) {
+    try {
+      const members = await membersOf(serverId);
+      for (const c of conns.values()) if (members.has(c.user.id)) send(c, msg);
+    } catch (err) { console.error(err); }
   }
 
   function toUser(userId, msg) {
@@ -196,12 +214,16 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
     broadcastVoice(serverId, channelId);
   }
 
-  function setPresence(userId, delta) {
+  async function setPresence(userId, delta) {
+    try { await updatePresence(userId, delta); } catch (err) { console.error(err); }
+  }
+
+  async function updatePresence(userId, delta) {
     const before = onlineUsers.get(userId) || 0;
     const after = before + delta;
     if (after <= 0) onlineUsers.delete(userId); else onlineUsers.set(userId, after);
     if ((before === 0) !== (after <= 0)) {
-      for (const serverId of serverIdsOf(userId)) toServer(serverId, { type: 'presence', serverId, userId, online: after > 0 });
+      for (const serverId of await serverIdsOf(userId)) toServer(serverId, { type: 'presence', serverId, userId, online: after > 0 });
     }
   }
 
@@ -211,11 +233,12 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
     }
   }
 
-  function onSocketMessage(conn, msg) {
+  async function onSocketMessage(conn, msg) {
     switch (msg.type) {
       case 'voice-join': {
-        const ch = channelRow(Number(msg.channelId));
-        if (!ch || ch.type !== 'voice' || !isMember(ch.serverId, conn.user.id)) return;
+        const ch = await channelRow(Number(msg.channelId));
+        if (!ch || ch.type !== 'voice' || !(await isMember(ch.serverId, conn.user.id))) return;
+        if (!conns.has(conn.id)) return; // a conexão caiu enquanto esperávamos o banco
         // Uma pessoa só fica em um canal de voz por vez (como no Discord)
         for (const c of conns.values()) {
           if (c.user.id === conn.user.id && c !== conn && c.voice) { leaveVoice(c); send(c, { type: 'voice-ended', reason: 'outra-aba' }); }
@@ -248,8 +271,8 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
         break;
       }
       case 'typing': {
-        const ch = channelRow(Number(msg.channelId));
-        if (!ch || ch.type !== 'text' || !isMember(ch.serverId, conn.user.id)) return;
+        const ch = await channelRow(Number(msg.channelId));
+        if (!ch || ch.type !== 'text' || !(await isMember(ch.serverId, conn.user.id))) return;
         toServer(ch.serverId, { type: 'typing', channelId: ch.id, userId: conn.user.id, name: conn.user.displayName });
         break;
       }
@@ -278,176 +301,179 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
     routes.push({ method, re, keys, handler, auth });
   };
 
-  route('POST', '/api/register', ({ body, ip }) => {
+  route('POST', '/api/register', async ({ body, ip }) => {
     throttle(ip);
     const username = cleanName(body.username, 32, 'Usuário').toLowerCase();
     if (!/^[a-z0-9_.]{3,32}$/.test(username)) throw new HttpError(400, 'Usuário: 3 a 32 letras, números, ponto ou _ (sem espaços).');
     const displayName = cleanName(body.displayName || body.username, 32, 'Nome');
     const password = String(body.password || '');
     if (password.length < 6) throw new HttpError(400, 'A senha precisa ter pelo menos 6 caracteres.');
-    if (q('SELECT 1 FROM users WHERE username = ?').get(username)) throw new HttpError(409, 'Esse usuário já existe.');
-    const { lastInsertRowid } = q('INSERT INTO users (username, display_name, pass_hash, created_at) VALUES (?, ?, ?, ?)')
-      .run(username, displayName, hashPassword(password), now());
-    return { token: newSession(Number(lastInsertRowid)) };
+    if (await db.get('SELECT 1 FROM users WHERE username = ?', username)) throw new HttpError(409, 'Esse usuário já existe.');
+    const { lastInsertRowid } = await db.run('INSERT INTO users (username, display_name, pass_hash, created_at) VALUES (?, ?, ?, ?)', username, displayName, hashPassword(password), now());
+    return { token: await newSession(lastInsertRowid) };
   }, { auth: false });
 
-  route('POST', '/api/login', ({ body, ip }) => {
+  route('POST', '/api/login', async ({ body, ip }) => {
     throttle(ip);
-    const row = q('SELECT id, pass_hash FROM users WHERE username = ?').get(String(body.username || '').trim().toLowerCase());
+    const row = await db.get('SELECT id, pass_hash FROM users WHERE username = ?', String(body.username || '').trim().toLowerCase());
     if (!row || !checkPassword(String(body.password || ''), row.pass_hash)) {
       failedLogin(ip);
       throw new HttpError(401, 'Usuário ou senha incorretos.');
     }
-    return { token: newSession(row.id) };
+    return { token: await newSession(row.id) };
   }, { auth: false });
 
-  route('POST', '/api/logout', ({ token }) => {
-    q('DELETE FROM sessions WHERE token = ?').run(token);
+  route('POST', '/api/logout', async ({ token }) => {
+    await db.run('DELETE FROM sessions WHERE token = ?', token);
     return { ok: true };
   });
 
-  route('GET', '/api/me', ({ user }) => ({
+  route('GET', '/api/me', async ({ user }) => ({
     user,
-    servers: listServers(user.id),
+    servers: await listServers(user.id),
     media: media.clientConfig(user.id),
   }));
 
-  route('PATCH', '/api/me', ({ user, body }) => {
+  route('PATCH', '/api/me', async ({ user, body }) => {
     const displayName = cleanName(body.displayName, 32, 'Nome');
-    q('UPDATE users SET display_name = ? WHERE id = ?').run(displayName, user.id);
-    for (const sid of serverIdsOf(user.id)) toServer(sid, { type: 'server-update', serverId: sid });
+    await db.run('UPDATE users SET display_name = ? WHERE id = ?', displayName, user.id);
+    for (const sid of await serverIdsOf(user.id)) toServer(sid, { type: 'server-update', serverId: sid });
     return { ok: true };
   });
 
-  route('POST', '/api/servers', ({ user, body }) => {
-    if (listServers(user.id).filter((s) => s.ownerId === user.id).length >= 20) throw new HttpError(400, 'Limite de 20 servidores criados.');
-    const id = createServer(cleanName(body.name, 50, 'Nome do servidor'), user);
+  route('POST', '/api/servers', async ({ user, body }) => {
+    if ((await listServers(user.id)).filter((s) => s.ownerId === user.id).length >= 20) throw new HttpError(400, 'Limite de 20 servidores criados.');
+    const id = await createServer(cleanName(body.name, 50, 'Nome do servidor'), user);
     return serverDetail(id, user.id);
   });
 
-  route('GET', '/api/servers/:id', ({ user, params }) => {
-    requireMember(Number(params.id), user);
+  route('GET', '/api/servers/:id', async ({ user, params }) => {
+    await requireMember(Number(params.id), user);
     return serverDetail(Number(params.id), user.id);
   });
 
-  route('PATCH', '/api/servers/:id', ({ user, params, body }) => {
-    const s = requireOwner(Number(params.id), user);
-    q('UPDATE servers SET name = ? WHERE id = ?').run(cleanName(body.name, 50, 'Nome do servidor'), s.id);
+  route('PATCH', '/api/servers/:id', async ({ user, params, body }) => {
+    const s = await requireOwner(Number(params.id), user);
+    await db.run('UPDATE servers SET name = ? WHERE id = ?', cleanName(body.name, 50, 'Nome do servidor'), s.id);
     toServer(s.id, { type: 'server-update', serverId: s.id });
     return { ok: true };
   });
 
-  route('DELETE', '/api/servers/:id', ({ user, params }) => {
-    const s = requireOwner(Number(params.id), user);
-    const memberIds = q('SELECT user_id AS id FROM members WHERE server_id = ?').all(s.id).map((r) => r.id);
+  route('DELETE', '/api/servers/:id', async ({ user, params }) => {
+    const s = await requireOwner(Number(params.id), user);
+    const memberIds = [...await membersOf(s.id)];
     for (const uid of memberIds) kickFromServer(s.id, uid);
-    q('DELETE FROM servers WHERE id = ?').run(s.id);
+    // Apaga em ordem, sem depender de ON DELETE CASCADE (nem todo banco na nuvem liga as chaves estrangeiras)
+    await db.run('DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE server_id = ?)', s.id);
+    await db.run('DELETE FROM channels WHERE server_id = ?', s.id);
+    await db.run('DELETE FROM members WHERE server_id = ?', s.id);
+    await db.run('DELETE FROM servers WHERE id = ?', s.id);
+    memberCache.delete(s.id);
     for (const uid of memberIds) toUser(uid, { type: 'server-removed', serverId: s.id });
     return { ok: true };
   });
 
-  route('POST', '/api/servers/:id/leave', ({ user, params }) => {
-    const s = requireMember(Number(params.id), user);
+  route('POST', '/api/servers/:id/leave', async ({ user, params }) => {
+    const s = await requireMember(Number(params.id), user);
     if (s.ownerId === user.id) throw new HttpError(400, 'O dono não pode sair. Apague o servidor.');
     kickFromServer(s.id, user.id);
-    q('DELETE FROM members WHERE server_id = ? AND user_id = ?').run(s.id, user.id);
+    await db.run('DELETE FROM members WHERE server_id = ? AND user_id = ?', s.id, user.id);
+    memberCache.delete(s.id);
     toUser(user.id, { type: 'server-removed', serverId: s.id });
     toServer(s.id, { type: 'server-update', serverId: s.id });
     return { ok: true };
   });
 
-  route('POST', '/api/servers/:id/invite', ({ user, params }) => {
-    const s = requireOwner(Number(params.id), user);
+  route('POST', '/api/servers/:id/invite', async ({ user, params }) => {
+    const s = await requireOwner(Number(params.id), user);
     const code = inviteCode();
-    q('UPDATE servers SET invite_code = ? WHERE id = ?').run(code, s.id);
+    await db.run('UPDATE servers SET invite_code = ? WHERE id = ?', code, s.id);
     return { inviteCode: code };
   });
 
-  route('POST', '/api/servers/:id/channels', ({ user, params, body }) => {
-    const s = requireOwner(Number(params.id), user);
+  route('POST', '/api/servers/:id/channels', async ({ user, params, body }) => {
+    const s = await requireOwner(Number(params.id), user);
     const type = body.type === 'voice' ? 'voice' : 'text';
-    const count = q('SELECT COUNT(*) AS n FROM channels WHERE server_id = ?').get(s.id).n;
+    const count = (await db.get('SELECT COUNT(*) AS n FROM channels WHERE server_id = ?', s.id)).n;
     if (count >= 100) throw new HttpError(400, 'Limite de 100 canais.');
-    const pos = q('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM channels WHERE server_id = ? AND type = ?').get(s.id, type).p;
-    const { lastInsertRowid } = q('INSERT INTO channels (server_id, name, type, position) VALUES (?, ?, ?, ?)')
-      .run(s.id, cleanChannelName(body.name, type), type, pos);
+    const pos = (await db.get('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM channels WHERE server_id = ? AND type = ?', s.id, type)).p;
+    const { lastInsertRowid } = await db.run('INSERT INTO channels (server_id, name, type, position) VALUES (?, ?, ?, ?)', s.id, cleanChannelName(body.name, type), type, pos);
     toServer(s.id, { type: 'server-update', serverId: s.id });
-    return channelRow(Number(lastInsertRowid));
+    return channelRow(lastInsertRowid);
   });
 
-  route('PATCH', '/api/channels/:id', ({ user, params, body }) => {
-    const c = requireChannel(Number(params.id), user);
-    requireOwner(c.serverId, user);
-    q('UPDATE channels SET name = ? WHERE id = ?').run(cleanChannelName(body.name, c.type), c.id);
+  route('PATCH', '/api/channels/:id', async ({ user, params, body }) => {
+    const c = await requireChannel(Number(params.id), user);
+    await requireOwner(c.serverId, user);
+    await db.run('UPDATE channels SET name = ? WHERE id = ?', cleanChannelName(body.name, c.type), c.id);
     toServer(c.serverId, { type: 'server-update', serverId: c.serverId });
     return { ok: true };
   });
 
-  route('DELETE', '/api/channels/:id', ({ user, params }) => {
-    const c = requireChannel(Number(params.id), user);
-    requireOwner(c.serverId, user);
+  route('DELETE', '/api/channels/:id', async ({ user, params }) => {
+    const c = await requireChannel(Number(params.id), user);
+    await requireOwner(c.serverId, user);
     for (const conn of conns.values()) {
       if (conn.voice?.channelId === c.id) { conn.voice = null; send(conn, { type: 'voice-ended' }); }
     }
-    q('DELETE FROM channels WHERE id = ?').run(c.id);
+    await db.run('DELETE FROM messages WHERE channel_id = ?', c.id);
+    await db.run('DELETE FROM channels WHERE id = ?', c.id);
     toServer(c.serverId, { type: 'server-update', serverId: c.serverId });
     return { ok: true };
   });
 
-  route('GET', '/api/invites/:code', ({ params }) => {
-    const s = q('SELECT id, name FROM servers WHERE invite_code = ?').get(params.code);
+  route('GET', '/api/invites/:code', async ({ params }) => {
+    const s = await db.get('SELECT id, name FROM servers WHERE invite_code = ?', params.code);
     if (!s) throw new HttpError(404, 'Convite inválido ou expirado.');
-    const n = q('SELECT COUNT(*) AS n FROM members WHERE server_id = ?').get(s.id).n;
+    const n = (await db.get('SELECT COUNT(*) AS n FROM members WHERE server_id = ?', s.id)).n;
     return { serverId: s.id, name: s.name, members: n };
   }, { auth: false });
 
-  route('POST', '/api/invites/:code', ({ user, params }) => {
-    const s = q('SELECT id FROM servers WHERE invite_code = ?').get(params.code);
+  route('POST', '/api/invites/:code', async ({ user, params }) => {
+    const s = await db.get('SELECT id FROM servers WHERE invite_code = ?', params.code);
     if (!s) throw new HttpError(404, 'Convite inválido ou expirado.');
-    if (!isMember(s.id, user.id)) {
-      q('INSERT INTO members (server_id, user_id, joined_at) VALUES (?, ?, ?)').run(s.id, user.id, now());
+    if (!(await isMember(s.id, user.id))) {
+      await db.run('INSERT OR IGNORE INTO members (server_id, user_id, joined_at) VALUES (?, ?, ?)', s.id, user.id, now());
+      memberCache.delete(s.id);
       toServer(s.id, { type: 'server-update', serverId: s.id });
     }
     return { serverId: s.id };
   });
 
-  route('GET', '/api/channels/:id/messages', ({ user, params, query }) => {
-    const c = requireChannel(Number(params.id), user);
+  route('GET', '/api/channels/:id/messages', async ({ user, params, query }) => {
+    const c = await requireChannel(Number(params.id), user);
     if (c.type !== 'text') throw new HttpError(400, 'Canal de voz não tem mensagens.');
     const before = Number(query.get('before')) || Number.MAX_SAFE_INTEGER;
     const limit = Math.min(Number(query.get('limit')) || 50, 100);
-    const rows = q(`SELECT m.*, u.display_name AS author FROM messages m JOIN users u ON u.id = m.user_id
-                    WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?`).all(c.id, before, limit);
+    const rows = await db.all(`SELECT m.*, u.display_name AS author FROM messages m JOIN users u ON u.id = m.user_id
+                    WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?`, c.id, before, limit);
     return { messages: rows.reverse().map(messagePayload) };
   });
 
-  route('POST', '/api/channels/:id/messages', ({ user, params, body }) => {
-    const c = requireChannel(Number(params.id), user);
+  route('POST', '/api/channels/:id/messages', async ({ user, params, body }) => {
+    const c = await requireChannel(Number(params.id), user);
     if (c.type !== 'text') throw new HttpError(400, 'Canal de voz não tem mensagens.');
     const text = String(body.text || '').trim();
     if (!text) throw new HttpError(400, 'Mensagem vazia.');
     if (text.length > 4000) throw new HttpError(400, 'Mensagem longa demais (máximo 4000 caracteres).');
-    const { lastInsertRowid } = q('INSERT INTO messages (channel_id, user_id, text, created_at) VALUES (?, ?, ?, ?)')
-      .run(c.id, user.id, text, now());
-    const row = q(`SELECT m.*, u.display_name AS author FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?`)
-      .get(Number(lastInsertRowid));
+    const { lastInsertRowid } = await db.run('INSERT INTO messages (channel_id, user_id, text, created_at) VALUES (?, ?, ?, ?)', c.id, user.id, text, now());
+    const row = await db.get(`SELECT m.*, u.display_name AS author FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?`, lastInsertRowid);
     const message = messagePayload(row);
     toServer(c.serverId, { type: 'message', serverId: c.serverId, message });
     return message;
   });
 
-  route('DELETE', '/api/messages/:id', ({ user, params }) => {
-    const m = q('SELECT m.id, m.user_id, c.server_id, c.id AS channel_id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = ?')
-      .get(Number(params.id));
-    if (!m || !isMember(m.server_id, user.id)) throw new HttpError(404, 'Mensagem não encontrada.');
-    if (m.user_id !== user.id && serverRow(m.server_id).ownerId !== user.id) throw new HttpError(403, 'Você não pode apagar essa mensagem.');
-    q('DELETE FROM messages WHERE id = ?').run(m.id);
+  route('DELETE', '/api/messages/:id', async ({ user, params }) => {
+    const m = await db.get('SELECT m.id, m.user_id, c.server_id, c.id AS channel_id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = ?', Number(params.id));
+    if (!m || !(await isMember(m.server_id, user.id))) throw new HttpError(404, 'Mensagem não encontrada.');
+    if (m.user_id !== user.id && (await serverRow(m.server_id)).ownerId !== user.id) throw new HttpError(403, 'Você não pode apagar essa mensagem.');
+    await db.run('DELETE FROM messages WHERE id = ?', m.id);
     toServer(m.server_id, { type: 'message-deleted', serverId: m.server_id, channelId: m.channel_id, messageId: m.id });
     return { ok: true };
   });
 
-  route('GET', '/api/voice/:id/token', ({ user, params, query }) => {
-    const c = requireChannel(Number(params.id), user);
+  route('GET', '/api/voice/:id/token', async ({ user, params, query }) => {
+    const c = await requireChannel(Number(params.id), user);
     if (c.type !== 'voice') throw new HttpError(400, 'Esse não é um canal de voz.');
     if (!media.livekitEnabled()) throw new HttpError(400, 'Servidor de mídia não configurado.');
     const identity = `u${user.id}-${String(query.get('session') || crypto.randomBytes(4).toString('hex')).slice(0, 16)}`;
@@ -511,7 +537,8 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
       const m = url.pathname.match(r.re);
       const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
       const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-      const user = userFromToken(token);
+      await db.ready;
+      const user = await userFromToken(token);
       if (r.auth && !user) throw new HttpError(401, 'Faça login de novo.');
       const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readBody(req) : {};
       const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
@@ -526,10 +553,17 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
 
   const wss = new WebSocketServer({ server, path: '/ws', perMessageDeflate: false });
 
-  wss.on('connection', (ws, req) => {
+  wss.on('connection', async (ws, req) => {
     const url = new URL(req.url, 'http://x');
-    const user = userFromToken(url.searchParams.get('token'));
+    // Guarda o que chegar enquanto o login é conferido no banco
+    const early = [];
+    const buffer = (raw) => early.push(raw);
+    ws.on('message', buffer);
+    let user = null;
+    try { await db.ready; user = await userFromToken(url.searchParams.get('token')); } catch (err) { console.error(err); }
+    ws.off('message', buffer);
     if (!user) return ws.close(4001, 'unauthorized');
+    if (ws.readyState !== ws.OPEN) return;
 
     const conn = { id: crypto.randomUUID(), user, ws, voice: null, alive: true };
     conns.set(conn.id, conn);
@@ -537,11 +571,15 @@ function createApp({ dbFile = process.env.DB_FILE || path.join(__dirname, 'data'
     send(conn, { type: 'hello', connId: conn.id });
 
     ws.on('pong', () => { conn.alive = true; });
-    ws.on('message', (raw) => {
+    // Mensagens da mesma conexão são tratadas em ordem, uma de cada vez
+    let queue = Promise.resolve();
+    const onMessage = (raw) => {
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
-      try { onSocketMessage(conn, msg); } catch (err) { console.error(err); }
-    });
+      queue = queue.then(() => onSocketMessage(conn, msg)).catch((err) => console.error(err));
+    };
+    ws.on('message', onMessage);
+    early.forEach(onMessage);
     ws.on('close', () => {
       leaveVoice(conn);
       conns.delete(conn.id);
@@ -574,9 +612,11 @@ module.exports = { createApp };
 if (require.main === module) {
   const PORT = Number(process.env.PORT) || 3000;
   const HOST = process.env.HOST || '0.0.0.0';
-  const { server } = createApp();
+  const { server, db } = createApp();
+  db.ready.catch((err) => { console.error('Não consegui abrir o banco de dados:', err.message); process.exit(1); });
   server.listen(PORT, HOST, () => {
     console.log(`StraightTalk rodando em http://localhost:${PORT}`);
+    console.log(`Banco: ${db.kind === 'libsql' ? 'nuvem (DATABASE_URL)' : 'arquivo local'}`);
     console.log(media.livekitEnabled() ? `Mídia: LiveKit (${process.env.LIVEKIT_URL})` : 'Mídia: P2P' + (process.env.TURN_URLS ? ' + TURN' : ''));
   });
 }

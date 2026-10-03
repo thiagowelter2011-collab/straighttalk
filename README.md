@@ -43,8 +43,15 @@ O app tem dois modos, escolhidos pelas variáveis de ambiente:
 | `TURN_SECRET` | Segredo do coturn (`use-auth-secret`). Gera credenciais temporárias por usuário. |
 | `TURN_USERNAME` / `TURN_PASSWORD` | Alternativa ao `TURN_SECRET`, com credenciais fixas |
 | `STUN_URLS` | Troca os servidores STUN padrão (Google) |
+| `DATABASE_URL` / `DATABASE_AUTH_TOKEN` | Banco na nuvem (Turso, `libsql://...`). Sem isso, usa o arquivo local. |
 
-A hospedagem completa (app + LiveKit com TURN + HTTPS) está em [`deploy/`](deploy/).
+## Hospedar
+
+- **De graça:** Render + Turso + LiveKit Cloud. Passo a passo em [`deploy/GRATIS.md`](deploy/GRATIS.md).
+
+  [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thiagowelter2011-collab/straighttalk)
+
+- **VPS própria** (menor delay, sem limite de minutos): app + LiveKit com TURN + HTTPS automático, em [`deploy/`](deploy/).
 
 ## Testes
 

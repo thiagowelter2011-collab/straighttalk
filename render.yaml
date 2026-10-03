@@ -1,0 +1,24 @@
+# Hospedagem grátis no Render (botão "Deploy to Render" no README).
+# O banco fica no Turso e a voz/tela no LiveKit Cloud; o Render só roda o site.
+services:
+  - type: web
+    name: straighttalk
+    runtime: node
+    plan: free
+    region: virginia
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_AUTH_TOKEN
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false

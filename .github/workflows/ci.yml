@@ -16,4 +16,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Testes com o driver do banco na nuvem (libsql)
+        run: npm test
+        env:
+          TEST_DATABASE_URL: file:${{ runner.temp }}/teste.db
       - run: node --check public/app.js && node --check public/media.js

@@ -10,7 +10,8 @@ before(async () => {
   process.env.LIVEKIT_URL = 'ws://localhost:7880';
   process.env.LIVEKIT_API_KEY = 'devkey';
   process.env.LIVEKIT_API_SECRET = 'secret-de-teste-com-32-caracteres!!';
-  app = createApp({ dbFile: ':memory:' });
+  // TEST_DATABASE_URL=file:/tmp/x.db roda os mesmos testes pelo driver de banco na nuvem (libsql)
+  app = createApp(process.env.TEST_DATABASE_URL ? { dbUrl: process.env.TEST_DATABASE_URL } : { dbFile: ':memory:', dbUrl: '' });
   await new Promise((r) => app.server.listen(0, r));
   base = `http://127.0.0.1:${app.server.address().port}`;
 });

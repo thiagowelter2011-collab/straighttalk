@@ -1,0 +1,16 @@
+name: Manter acordado
+
+# O plano grátis do Render desliga o site depois de 15 minutos sem visitas,
+# e ele demora quase um minuto para voltar. Isto visita o site a cada 10 minutos.
+# Configure a variável STRAIGHTTALK_URL em Settings > Secrets and variables > Actions > Variables.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    if: vars.STRAIGHTTALK_URL != ''
+    steps:
+      - run: curl -fsS --retry 3 --retry-delay 20 --max-time 90 "${{ vars.STRAIGHTTALK_URL }}/healthz"
