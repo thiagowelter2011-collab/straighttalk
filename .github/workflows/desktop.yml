@@ -1,0 +1,48 @@
+name: App para Windows
+
+# Gera o instalador (.exe) do app. Rode manualmente na aba Actions,
+# ou crie uma tag "v2.0.1" para gerar e publicar numa Release.
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: Endereço do servidor que o app abre por padrão (ex.: https://1-2-3-4.sslip.io)
+        required: false
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Endereço padrão do servidor
+        shell: bash
+        env:
+          SERVER_URL: ${{ inputs.server_url || vars.STRAIGHTTALK_URL }}
+        run: |
+          if [ -n "$SERVER_URL" ]; then
+            node -e "const f='package.json',p=require('./'+f);p.straighttalk.serverUrl=process.env.SERVER_URL;require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
+          fi
+          node -p "'serverUrl: ' + (require('./package.json').straighttalk.serverUrl || '(perguntar ao abrir)')"
+      - run: npm install
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StraightTalk-Windows
+          path: |
+            desktop/dist/*.exe
+      - name: Publicar na Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/dist/*.exe

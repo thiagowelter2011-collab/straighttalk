@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'">
+  <title>StraightTalk</title>
+  <link rel="stylesheet" href="common.css">
+  <link rel="stylesheet" href="setup.css">
+</head>
+<body>
+  <form id="form" class="card">
+    <h1>🎧 StraightTalk</h1>
+    <p class="muted">Qual é o endereço do seu servidor StraightTalk?</p>
+    <input id="url" placeholder="https://straighttalk.seudominio.com" autofocus spellcheck="false">
+    <p id="error" class="error"></p>
+    <button class="primary" type="submit">Conectar</button>
+    <p class="muted small">Dica: aperte Ctrl+Shift+S a qualquer momento para trocar de servidor.</p>
+  </form>
+  <script src="setup.js"></script>
+</body>
+</html>

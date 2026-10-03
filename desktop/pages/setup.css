@@ -1,0 +1,5 @@
+body { display: grid; place-items: center; background: radial-gradient(circle at 30% 20%, #404eed 0, #1e1f22 60%); }
+.card { width: min(440px, calc(100% - 32px)); background: var(--bg); border-radius: 12px; padding: 28px; display: grid; gap: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.4); }
+h1 { margin: 0; font-size: 26px; }
+p { margin: 0; }
+.small { font-size: 12px; }

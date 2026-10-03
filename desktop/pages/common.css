@@ -1,0 +1,9 @@
+:root { --bg:#313338; --bg-2:#2b2d31; --bg-3:#1e1f22; --text:#dbdee1; --muted:#949ba4; --accent:#5865f2; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, "Segoe UI", sans-serif; }
+button { font: inherit; cursor: pointer; border: 0; border-radius: 8px; padding: 9px 16px; background: #3a3c42; color: var(--text); }
+button.primary { background: var(--accent); color: #fff; }
+input { font: inherit; color: var(--text); background: var(--bg-3); border: 1px solid transparent; border-radius: 8px; padding: 10px 12px; width: 100%; outline: none; }
+input:focus { border-color: var(--accent); }
+.muted { color: var(--muted); }
+.error { color: #fa777c; min-height: 1.2em; }

@@ -1,0 +1,38 @@
+# StraightTalk em produção: app + servidor de mídia LiveKit (com TURN) + HTTPS automático (Caddy).
+# Tudo em "network_mode: host" para a mídia (UDP) não passar por NAT do Docker.
+# Configuração em deploy/.env (gerado pelo setup.sh).
+
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      HOST: 127.0.0.1
+      PORT: 3000
+      LIVEKIT_URL: wss://${LK_DOMAIN}
+    volumes:
+      - ./data:/app/data
+
+  livekit:
+    image: livekit/livekit-server:v1.13.7
+    restart: unless-stopped
+    network_mode: host
+    command: --config /etc/livekit.yaml
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

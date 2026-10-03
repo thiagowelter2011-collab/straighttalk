@@ -1,0 +1,16 @@
+{
+  "name": "straighttalk",
+  "version": "2.0.0",
+  "description": "Chat de texto, voz e compartilhamento de tela estilo Discord, com baixa latência",
+  "main": "server.js",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "dependencies": {
+    "livekit-client": "^2.15.0",
+    "ws": "^8.18.0"
+  }
+}

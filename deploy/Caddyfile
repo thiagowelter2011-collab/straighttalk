@@ -1,0 +1,9 @@
+# HTTPS automático (Let's Encrypt) para o app e para o servidor de mídia.
+{$APP_DOMAIN} {
+	encode gzip
+	reverse_proxy 127.0.0.1:3000
+}
+
+{$LK_DOMAIN} {
+	reverse_proxy 127.0.0.1:7880
+}

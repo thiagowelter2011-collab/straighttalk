@@ -1,0 +1,40 @@
+{
+  "name": "straighttalk-desktop",
+  "productName": "StraightTalk",
+  "version": "2.0.0",
+  "description": "App do StraightTalk para Windows",
+  "main": "main.js",
+  "private": true,
+  "author": "StraightTalk",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis portable --publish never"
+  },
+  "straighttalk": {
+    "serverUrl": ""
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "app.straighttalk.desktop",
+    "productName": "StraightTalk",
+    "files": ["main.js", "preload.js", "pages/**", "build/icon.png", "package.json"],
+    "directories": { "output": "dist" },
+    "win": {
+      "target": ["nsis", "portable"],
+      "icon": "build/icon.png",
+      "artifactName": "StraightTalk-${version}-${arch}-${target}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "StraightTalk"
+    },
+    "portable": {
+      "artifactName": "StraightTalk-${version}-portatil.exe"
+    }
+  }
+}
