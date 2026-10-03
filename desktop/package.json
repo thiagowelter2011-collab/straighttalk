@@ -24,10 +24,10 @@
     "directories": { "output": "dist" },
     "win": {
       "target": ["nsis", "portable"],
-      "icon": "build/icon.png",
-      "artifactName": "StraightTalk-${version}-${arch}-${target}.${ext}"
+      "icon": "build/icon.png"
     },
     "nsis": {
+      "artifactName": "StraightTalk-${version}-instalador.${ext}",
       "oneClick": true,
       "perMachine": false,
       "createDesktopShortcut": true,
