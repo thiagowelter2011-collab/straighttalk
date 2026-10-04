@@ -4,6 +4,7 @@ Chat de texto, voz e compartilhamento de tela ao mesmo tempo, com cara de mensag
 
 - **Visual de mensageiro clássico:** lista de contatos com status (Disponível, Ocupado, Ausente, Invisível), mensagem pessoal, "Fulano diz:", emoticons por atalho (`:)`, `(L)`, `(Y)`...), **chamar atenção** que treme a janela e sons de mensagem/contato online
 - **Conversa particular:** clique num contato para abrir um chat só entre vocês dois, com aviso de mensagem nova, "digitando…" e chamar atenção só para aquela pessoa
+- **Imagens e arquivos:** botão 📎, colar (Ctrl+V) ou arrastar para o chat; imagens, vídeos e áudios aparecem na conversa (até 8 MB, guardados no banco)
 
 ![Conversa](docs/msn-chat.png)
 

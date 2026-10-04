@@ -93,6 +93,20 @@ const tag = Date.now().toString(36);
   await bia.click('#text-channels .channel >> nth=0');
   console.log('conversa particular ok');
 
+  // Imagem e arquivo no chat (o print da tela serve de imagem de teste)
+  await bia.waitForSelector('.msg .text >> text=valeu ana');
+  const shot = await ana.screenshot({ clip: { x: 0, y: 0, width: 400, height: 300 } });
+  await ana.setInputFiles('#file-input', [
+    { name: 'print.png', mimeType: 'image/png', buffer: shot },
+    { name: 'lista de compras.txt', mimeType: 'text/plain', buffer: Buffer.from('pão, leite, café') },
+  ]);
+  await bia.waitForFunction(() => { const i = document.querySelector('.att-img img'); return i && i.complete && i.naturalWidth === 400; }, null, { timeout: 15000 });
+  await bia.waitForSelector('.att-file >> text=lista de compras.txt');
+  const txt = await bia.evaluate(async () => (await fetch(document.querySelector('.att-file').href)).text());
+  if (txt !== 'pão, leite, café') throw new Error('arquivo veio diferente: ' + txt);
+  await bia.screenshot({ path: `${OUT}/v2-arquivos.png` });
+  console.log('imagens e arquivos ok');
+
   const caio = await person('Caio');
   await register(caio, `caio${tag}`, 'Caio', invite);
   await caio.waitForSelector('#dlg-form[open]');

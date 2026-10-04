@@ -281,7 +281,7 @@ async function onWs(msg) {
       clearTyping(m.channelId, m.userId);
       const visible = S.view === 'text' && S.serverId === msg.serverId && S.textChannel[S.serverId] === m.channelId;
       if (m.userId !== S.user.id) {
-        if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${m.text}`); }
+        if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${preview(m)}`); }
       }
       if (visible) appendMessage(m, m.channelId);
       else if (m.userId !== S.user.id) {
@@ -491,15 +491,18 @@ function messageNode(m, prev) {
     author.style.color = nameColor(m.author);
     body.append(el('div', { className: 'head' }, author, el('span', { className: 'time', textContent: fmtTime(m.createdAt) })));
   }
-  const text = el('div', { className: 'text' });
-  linkify(text, m.text, true);
-  if (!first) text.title = fmtTime(m.createdAt);
-  body.append(text);
+  if (m.text) {
+    const text = el('div', { className: 'text' });
+    linkify(text, m.text, true);
+    if (!first) text.title = fmtTime(m.createdAt);
+    body.append(text);
+  }
+  if (m.file) body.append(fileNode(m.file));
   node.append(avatar, body);
   if (m.channelId && (m.userId === S.user.id || S.detail?.server.ownerId === S.user.id)) {
     const del = el('button', { className: 'del', title: 'Apagar mensagem', textContent: '🗑️', type: 'button' });
     del.onclick = async () => {
-      if (!(await formDialog({ title: 'Apagar mensagem?', text: m.text.slice(0, 200), okText: 'Apagar', danger: true }))) return;
+      if (!(await formDialog({ title: 'Apagar mensagem?', text: preview(m).slice(0, 200), okText: 'Apagar', danger: true }))) return;
       api('DELETE', `/api/messages/${m.id}`).catch((e) => toast(e.message));
     };
     node.append(del);
@@ -507,8 +510,93 @@ function messageNode(m, prev) {
   return node;
 }
 
+function preview(m) {
+  return m.text || (m.file ? `📎 ${m.file.name}` : '');
+}
+
+function fileUrl(f) { return `/files/${f.key}/${encodeURIComponent(f.name)}`; }
+
+function fmtSize(n) {
+  return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1).replace('.', ',')} MB`;
+}
+
+// Imagem, vídeo e áudio aparecem no chat; outros arquivos viram um cartão para baixar
+function fileNode(f) {
+  const url = fileUrl(f);
+  const box = el('div', { className: 'attachment' });
+  if (/^image\/(png|jpeg|gif|webp|avif|bmp)$/.test(f.mime)) {
+    const img = el('img', { src: url, alt: f.name, loading: 'lazy', title: `${f.name} (${fmtSize(f.size)})` });
+    img.onload = () => {
+      const msgs = $('#messages');
+      if (msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < img.clientHeight + 120) msgs.scrollTop = msgs.scrollHeight;
+    };
+    box.append(el('a', { href: url, target: '_blank', rel: 'noopener', className: 'att-img' }, img));
+  } else if (/^video\/(mp4|webm)$/.test(f.mime)) {
+    box.append(el('video', { src: url, controls: true, preload: 'metadata', className: 'att-video' }));
+  } else if (/^audio\//.test(f.mime)) {
+    box.append(el('audio', { src: url, controls: true, preload: 'metadata' }));
+  } else {
+    box.append(el('a', { href: url, className: 'att-file', download: f.name },
+      el('span', { className: 'att-icon', textContent: '📄' }),
+      el('span', { className: 'att-name', textContent: f.name }),
+      el('span', { className: 'att-size', textContent: fmtSize(f.size) })));
+  }
+  return box;
+}
+
+// Envia imagens/arquivos para a conversa aberta (botão 📎, colar ou arrastar)
+async function sendFiles(files) {
+  const conv = currentConv();
+  if (!conv || !files.length) return;
+  for (const file of files) {
+    if (file.size > 8 * 1024 * 1024) { toast(`${file.name || 'Arquivo'} passa de 8 MB.`); continue; }
+    const name = file.name || `imagem-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}.${(file.type.split('/')[1] || 'bin').replace('jpeg', 'jpg')}`;
+    toast(`Enviando ${name}…`);
+    try {
+      const res = await fetch('/api/files', {
+        method: 'POST', body: file,
+        headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(name) },
+      });
+      const up = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(up.error || `Erro ${res.status}`);
+      const m = await api('POST', conv.url, { text: '', fileKey: up.key });
+      const list = S.messages.get(conv.key);
+      if (list && !list.some((x) => x.id === m.id)) { list.push(m); if (currentConv()?.key === conv.key) appendMessage(m, conv.key); }
+      toast(`${name} enviado.`);
+    } catch (err) {
+      toast(`Não foi possível enviar ${name}: ${err.message}`);
+    }
+  }
+}
+
+$('#btn-attach').onclick = () => $('#file-input').click();
+$('#file-input').onchange = () => {
+  const files = [...$('#file-input').files];
+  $('#file-input').value = '';
+  sendFiles(files);
+};
+
 const input = $('#chat-input');
 let lastTypingSent = 0;
+
+input.addEventListener('paste', (e) => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) { e.preventDefault(); sendFiles(files); }
+});
+const textView = $('#view-text');
+textView.addEventListener('dragover', (e) => {
+  if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+  e.preventDefault();
+  textView.classList.add('dropping');
+});
+textView.addEventListener('dragleave', (e) => { if (!textView.contains(e.relatedTarget)) textView.classList.remove('dropping'); });
+textView.addEventListener('drop', (e) => {
+  textView.classList.remove('dropping');
+  const files = [...(e.dataTransfer?.files || [])];
+  if (!files.length) return;
+  e.preventDefault();
+  sendFiles(files);
+});
 
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -637,8 +725,8 @@ function onDm(msg) {
     if (!mine && !(visible && !document.hidden)) c.unread++;
   }
   if (!mine) {
-    if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${m.text}`); }
-    if (!visible) toast(`${m.author} diz: ${m.text.slice(0, 80)}`);
+    if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${preview(m)}`); }
+    if (!visible) toast(`${m.author} diz: ${preview(m).slice(0, 80)}`);
   }
   if (visible) {
     if (list) appendMessage(m, key);

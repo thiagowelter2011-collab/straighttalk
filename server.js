@@ -26,6 +26,12 @@ const MIME = {
   '.json': 'application/json',
 };
 
+// Imagens, vídeos e áudios que o navegador pode mostrar direto; o resto vira download
+const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp',
+  'video/mp4', 'video/webm', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm']);
+const MAX_FILE = 8 * 1024 * 1024;
+const CHUNK = 512 * 1024;
+
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
@@ -130,14 +136,50 @@ function createApp({
     return Number(id);
   }
 
+  function filePayload(row) {
+    return row.f_key ? { key: row.f_key, name: row.f_name, mime: row.f_mime, size: row.f_size } : null;
+  }
+
   function messagePayload(row) {
-    return { id: row.id, channelId: row.channel_id, userId: row.user_id, author: row.author, text: row.text, createdAt: row.created_at };
+    return { id: row.id, channelId: row.channel_id, userId: row.user_id, author: row.author, text: row.text, file: filePayload(row), createdAt: row.created_at };
+  }
+
+  const MSG_SELECT = `SELECT m.*, u.display_name AS author, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size
+    FROM messages m JOIN users u ON u.id = m.user_id LEFT JOIN files f ON f.id = m.file_id`;
+  const DM_SELECT = `SELECT m.*, u.display_name AS author, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size
+    FROM dm_messages m JOIN users u ON u.id = m.from_id LEFT JOIN files f ON f.id = m.file_id`;
+
+  /* ---------------- Arquivos ---------------- */
+
+  async function deleteFiles(ids) {
+    for (const id of ids.filter(Boolean)) {
+      await db.run('DELETE FROM file_chunks WHERE file_id = ?', id);
+      await db.run('DELETE FROM files WHERE id = ?', id);
+    }
+  }
+
+  // Arquivo enviado pela pessoa e ainda não usado em nenhuma mensagem
+  async function claimFile(key, user) {
+    if (!key) return null;
+    const f = await db.get('SELECT id, key, name, mime, size FROM files WHERE key = ? AND user_id = ?', String(key), user.id);
+    if (!f) throw new HttpError(400, 'Arquivo não encontrado. Envie de novo.');
+    if (await db.get('SELECT 1 FROM messages WHERE file_id = ? UNION ALL SELECT 1 FROM dm_messages WHERE file_id = ? LIMIT 1', f.id, f.id)) {
+      throw new HttpError(400, 'Esse arquivo já foi enviado.');
+    }
+    return f;
+  }
+
+  function cleanText(body, file) {
+    const text = String(body.text || '').trim();
+    if (!text && !file) throw new HttpError(400, 'Mensagem vazia.');
+    if (text.length > 4000) throw new HttpError(400, 'Mensagem longa demais (máximo 4000 caracteres).');
+    return text;
   }
 
   /* ---------------- Conversas privadas ---------------- */
 
   function dmPayload(row) {
-    return { id: row.id, fromId: row.from_id, toId: row.to_id, userId: row.from_id, author: row.author, text: row.text, createdAt: row.created_at };
+    return { id: row.id, fromId: row.from_id, toId: row.to_id, userId: row.from_id, author: row.author, text: row.text, file: filePayload(row), createdAt: row.created_at };
   }
 
   // Dá para conversar com quem está em algum servidor com você (ou com quem você já conversou)
@@ -361,10 +403,10 @@ function createApp({
   }
 
   const routes = [];
-  const route = (method, pattern, handler, { auth = true } = {}) => {
+  const route = (method, pattern, handler, { auth = true, raw = false } = {}) => {
     const keys = [];
     const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-    routes.push({ method, re, keys, handler, auth });
+    routes.push({ method, re, keys, handler, auth, raw });
   };
 
   route('POST', '/api/register', async ({ body, ip }) => {
@@ -438,6 +480,7 @@ function createApp({
     const memberIds = [...await membersOf(s.id)];
     for (const uid of memberIds) kickFromServer(s.id, uid);
     // Apaga em ordem, sem depender de ON DELETE CASCADE (nem todo banco na nuvem liga as chaves estrangeiras)
+    await deleteFiles((await db.all('SELECT file_id AS id FROM messages WHERE file_id IS NOT NULL AND channel_id IN (SELECT id FROM channels WHERE server_id = ?)', s.id)).map((r) => r.id));
     await db.run('DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE server_id = ?)', s.id);
     await db.run('DELETE FROM channels WHERE server_id = ?', s.id);
     await db.run('DELETE FROM members WHERE server_id = ?', s.id);
@@ -490,6 +533,7 @@ function createApp({
     for (const conn of conns.values()) {
       if (conn.voice?.channelId === c.id) { conn.voice = null; send(conn, { type: 'voice-ended' }); }
     }
+    await deleteFiles((await db.all('SELECT file_id AS id FROM messages WHERE file_id IS NOT NULL AND channel_id = ?', c.id)).map((r) => r.id));
     await db.run('DELETE FROM messages WHERE channel_id = ?', c.id);
     await db.run('DELETE FROM channels WHERE id = ?', c.id);
     toServer(c.serverId, { type: 'server-update', serverId: c.serverId });
@@ -519,29 +563,28 @@ function createApp({
     if (c.type !== 'text') throw new HttpError(400, 'Canal de voz não tem mensagens.');
     const before = Number(query.get('before')) || Number.MAX_SAFE_INTEGER;
     const limit = Math.min(Number(query.get('limit')) || 50, 100);
-    const rows = await db.all(`SELECT m.*, u.display_name AS author FROM messages m JOIN users u ON u.id = m.user_id
-                    WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?`, c.id, before, limit);
+    const rows = await db.all(`${MSG_SELECT} WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?`, c.id, before, limit);
     return { messages: rows.reverse().map(messagePayload) };
   });
 
   route('POST', '/api/channels/:id/messages', async ({ user, params, body }) => {
     const c = await requireChannel(Number(params.id), user);
     if (c.type !== 'text') throw new HttpError(400, 'Canal de voz não tem mensagens.');
-    const text = String(body.text || '').trim();
-    if (!text) throw new HttpError(400, 'Mensagem vazia.');
-    if (text.length > 4000) throw new HttpError(400, 'Mensagem longa demais (máximo 4000 caracteres).');
-    const { lastInsertRowid } = await db.run('INSERT INTO messages (channel_id, user_id, text, created_at) VALUES (?, ?, ?, ?)', c.id, user.id, text, now());
-    const row = await db.get(`SELECT m.*, u.display_name AS author FROM messages m JOIN users u ON u.id = m.user_id WHERE m.id = ?`, lastInsertRowid);
+    const file = await claimFile(body.fileKey, user);
+    const text = cleanText(body, file);
+    const { lastInsertRowid } = await db.run('INSERT INTO messages (channel_id, user_id, text, file_id, created_at) VALUES (?, ?, ?, ?, ?)', c.id, user.id, text, file?.id ?? null, now());
+    const row = await db.get(`${MSG_SELECT} WHERE m.id = ?`, lastInsertRowid);
     const message = messagePayload(row);
     toServer(c.serverId, { type: 'message', serverId: c.serverId, message });
     return message;
   });
 
   route('DELETE', '/api/messages/:id', async ({ user, params }) => {
-    const m = await db.get('SELECT m.id, m.user_id, c.server_id, c.id AS channel_id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = ?', Number(params.id));
+    const m = await db.get('SELECT m.id, m.user_id, m.file_id, c.server_id, c.id AS channel_id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = ?', Number(params.id));
     if (!m || !(await isMember(m.server_id, user.id))) throw new HttpError(404, 'Mensagem não encontrada.');
     if (m.user_id !== user.id && (await serverRow(m.server_id)).ownerId !== user.id) throw new HttpError(403, 'Você não pode apagar essa mensagem.');
     await db.run('DELETE FROM messages WHERE id = ?', m.id);
+    await deleteFiles([m.file_id]);
     toServer(m.server_id, { type: 'message-deleted', serverId: m.server_id, channelId: m.channel_id, messageId: m.id });
     return { ok: true };
   });
@@ -566,7 +609,7 @@ function createApp({
     const peer = await requireDmPeer(Number(params.userId), user);
     const before = Number(query.get('before')) || Number.MAX_SAFE_INTEGER;
     const limit = Math.min(Number(query.get('limit')) || 50, 100);
-    const rows = await db.all(`SELECT m.*, u.display_name AS author FROM dm_messages m JOIN users u ON u.id = m.from_id
+    const rows = await db.all(`${DM_SELECT}
                     WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.id < ?
                     ORDER BY m.id DESC LIMIT ?`, user.id, peer.id, peer.id, user.id, before, limit);
     return {
@@ -577,12 +620,10 @@ function createApp({
 
   route('POST', '/api/dm/:userId/messages', async ({ user, params, body }) => {
     const peer = await requireDmPeer(Number(params.userId), user);
-    const text = String(body.text || '').trim();
-    if (!text) throw new HttpError(400, 'Mensagem vazia.');
-    if (text.length > 4000) throw new HttpError(400, 'Mensagem longa demais (máximo 4000 caracteres).');
-    const t = now();
-    const { lastInsertRowid } = await db.run('INSERT INTO dm_messages (from_id, to_id, text, created_at) VALUES (?, ?, ?, ?)', user.id, peer.id, text, t);
-    const message = dmPayload({ id: Number(lastInsertRowid), from_id: user.id, to_id: peer.id, author: user.displayName, text, created_at: t });
+    const file = await claimFile(body.fileKey, user);
+    const text = cleanText(body, file);
+    const { lastInsertRowid } = await db.run('INSERT INTO dm_messages (from_id, to_id, text, file_id, created_at) VALUES (?, ?, ?, ?, ?)', user.id, peer.id, text, file?.id ?? null, now());
+    const message = dmPayload(await db.get(`${DM_SELECT} WHERE m.id = ?`, lastInsertRowid));
     const out = { type: 'dm', message, from: { id: user.id, username: user.username, displayName: user.displayName, personalMessage: user.personalMessage, status: visibleStatus(user.id) } };
     toUser(peer.id, out);
     toUser(user.id, out);
@@ -596,6 +637,25 @@ function createApp({
     toUser(user.id, { type: 'dm-read', userId: peer.id });
     return { ok: true };
   });
+
+  // Envio de imagem/arquivo: o corpo é o próprio arquivo; o nome vem no cabeçalho X-File-Name
+  route('POST', '/api/files', async ({ req, user }) => {
+    const size = Number(req.headers['content-length']);
+    if (!size) throw new HttpError(400, 'Arquivo vazio.');
+    if (size > MAX_FILE) throw new HttpError(413, 'Arquivo grande demais (máximo 8 MB).');
+    const data = await readRaw(req, MAX_FILE);
+    if (!data.length) throw new HttpError(400, 'Arquivo vazio.');
+    let name;
+    try { name = decodeURIComponent(String(req.headers['x-file-name'] || '')); } catch { name = ''; }
+    name = name.replace(/[\\/\x00-\x1f"]/g, '_').trim().slice(0, 120) || 'arquivo';
+    const mime = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase().slice(0, 100) || 'application/octet-stream';
+    const key = crypto.randomBytes(18).toString('base64url');
+    const { lastInsertRowid: id } = await db.run('INSERT INTO files (key, user_id, name, mime, size, created_at) VALUES (?, ?, ?, ?, ?, ?)', key, user.id, name, mime, data.length, now());
+    for (let i = 0; i * CHUNK < data.length; i++) {
+      await db.run('INSERT INTO file_chunks (file_id, idx, data) VALUES (?, ?, ?)', id, i, data.subarray(i * CHUNK, (i + 1) * CHUNK));
+    }
+    return { key, name, mime, size: data.length };
+  }, { raw: true });
 
   route('GET', '/api/voice/:id/token', async ({ user, params, query }) => {
     const c = await requireChannel(Number(params.id), user);
@@ -626,6 +686,39 @@ function createApp({
       });
       req.on('error', reject);
     });
+  }
+
+  function readRaw(req, max) {
+    return new Promise((resolve, reject) => {
+      let size = 0;
+      const chunks = [];
+      req.on('data', (c) => {
+        size += c.length;
+        if (size > max) { reject(new HttpError(413, 'Arquivo grande demais (máximo 8 MB).')); req.destroy(); }
+        else chunks.push(c);
+      });
+      req.on('end', () => resolve(Buffer.concat(chunks)));
+      req.on('error', reject);
+    });
+  }
+
+  // Quem tem o link (chave aleatória) consegue ver o arquivo, como nos anexos do Discord
+  async function serveFile(res, key) {
+    await db.ready;
+    const f = await db.get('SELECT id, name, mime, size FROM files WHERE key = ?', key);
+    if (!f) { res.writeHead(404); return res.end('Não encontrado'); }
+    const inline = INLINE_TYPES.has(f.mime);
+    res.writeHead(200, {
+      'Content-Type': inline ? f.mime : 'application/octet-stream',
+      'Content-Length': f.size,
+      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'",
+      'Cache-Control': 'private, max-age=31536000, immutable',
+    });
+    const chunks = await db.all('SELECT data FROM file_chunks WHERE file_id = ? ORDER BY idx', f.id);
+    for (const c of chunks) res.write(Buffer.from(c.data));
+    res.end();
   }
 
   function json(res, status, data) {
@@ -659,6 +752,8 @@ function createApp({
       res.writeHead(302, { Location: process.env.DOWNLOAD_URL_BASE ? `${process.env.DOWNLOAD_URL_BASE}/${file}` : `${DOWNLOAD_BASE}/${file}` });
       return res.end();
     }
+    const fm = url.pathname.match(/^\/files\/([\w-]{10,40})(?:\/[^/]*)?$/);
+    if (fm && req.method === 'GET') return serveFile(res, fm[1]).catch((err) => { console.error(err); if (!res.headersSent) res.writeHead(500); res.end(); });
     if (url.pathname === '/healthz') return json(res, 200, { ok: true, version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null });
     if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
 
@@ -671,7 +766,7 @@ function createApp({
       await db.ready;
       const user = await userFromToken(token);
       if (r.auth && !user) throw new HttpError(401, 'Faça login de novo.');
-      const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readBody(req) : {};
+      const body = !r.raw && ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readBody(req) : {};
       const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
       const out = await r.handler({ req, user, token, body, params, query: url.searchParams, ip });
       json(res, 200, out);

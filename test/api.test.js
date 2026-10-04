@@ -261,6 +261,56 @@ test('conversa privada: só entre contatos, em tempo real, com não lidas', asyn
   a.ws.close(); b.ws.close();
 });
 
+test('imagens e arquivos no chat e na conversa particular', async () => {
+  const up = async (buf, name, type, token = ana) => {
+    const res = await fetch(base + '/api/files', { method: 'POST', body: buf, headers: { Authorization: `Bearer ${token}`, 'Content-Type': type, 'X-File-Name': encodeURIComponent(name) } });
+    return { status: res.status, data: await res.json() };
+  };
+  // Imagem maior que um pedaço (512 KB) para testar a remontagem
+  const img = Buffer.alloc(1300 * 1024, 7);
+  img.write('\x89PNG', 0, 'latin1');
+  let r = await up(img, 'foto de férias.png', 'image/png');
+  assert.equal(r.status, 200);
+  const key = r.data.key;
+  assert.equal(r.data.size, img.length);
+  assert.equal((await up(Buffer.alloc(9 * 1024 * 1024), 'grande.bin', 'application/octet-stream')).status, 413);
+
+  const sb = await socket(bia);
+  await sb.wait((m) => m.type === 'hello');
+  r = await call('POST', `/api/channels/${textId}/messages`, { text: '', fileKey: key }, ana);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.file.name, 'foto de férias.png');
+  const got = await sb.wait((m) => m.type === 'message' && m.message.file);
+  assert.equal(got.message.file.key, key);
+  assert.equal((await call('POST', `/api/channels/${textId}/messages`, { text: 'de novo', fileKey: key }, ana)).status, 400, 'mesmo arquivo duas vezes');
+  r = await up(Buffer.from('x'), 'a.txt', 'text/plain', ana);
+  assert.equal((await call('POST', `/api/channels/${textId}/messages`, { fileKey: r.data.key }, bia)).status, 400, 'arquivo de outra pessoa');
+
+  let res = await fetch(`${base}/files/${key}/foto.png`);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/png');
+  assert.ok(Buffer.from(await res.arrayBuffer()).equals(img), 'arquivo volta inteiro');
+
+  r = await up(Buffer.from('<svg onload=alert(1)>'), 'x.svg', 'image/svg+xml', bia);
+  res = await fetch(`${base}/files/${r.data.key}`);
+  assert.equal(res.headers.get('content-type'), 'application/octet-stream', 'svg vira download');
+  assert.match(res.headers.get('content-disposition'), /^attachment/);
+
+  const anaId = (await call('GET', '/api/me', null, ana)).data.user.id;
+  const doc = await up(Buffer.from('relatório'), 'relatório.pdf', 'application/pdf', bia);
+  r = await call('POST', `/api/dm/${anaId}/messages`, { text: 'segue o arquivo', fileKey: doc.data.key }, bia);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.file.mime, 'application/pdf');
+  const hist = await call('GET', `/api/dm/${anaId}/messages`, null, bia);
+  assert.equal(hist.data.messages.at(-1).file.name, 'relatório.pdf');
+
+  const msgs = await call('GET', `/api/channels/${textId}/messages`, null, ana);
+  const withFile = msgs.data.messages.find((m) => m.file?.key === key);
+  assert.equal((await call('DELETE', `/api/messages/${withFile.id}`, null, ana)).status, 200);
+  assert.equal((await fetch(`${base}/files/${key}`)).status, 404, 'apagar a mensagem apaga o arquivo');
+  sb.ws.close();
+});
+
 test('link para baixar o app do Windows', async () => {
   const res = await fetch(base + '/baixar', { redirect: 'manual' });
   assert.equal(res.status, 302);
