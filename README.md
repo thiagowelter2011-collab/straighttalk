@@ -15,6 +15,9 @@ Chat de texto, voz e compartilhamento de tela ao mesmo tempo, com cara de mensag
 
 ![Conversa particular](docs/msn-particular.png)
 
+- **Câmera na chamada:** ligue a webcam na voz; o vídeo de cada pessoa aparece ao lado da tela compartilhada
+- **Amigos:** adicione pelo nome de usuário; depois de aceitar, dá para conversar e ver o status sem estar no mesmo servidor
+- **Mensalidade (opcional):** cobrança mensal pelo Mercado Pago (Pix, cartão ou boleto), desligada até configurar a chave. Passo a passo em [`deploy/MENSALIDADE.md`](deploy/MENSALIDADE.md)
 - **Contas** com usuário e senha
 - **Servidores** com convite por link, **canais de texto** (com histórico) e **canais de voz**
 - **Voz** com indicador de quem fala, mudo, desativar áudio e volume por pessoa

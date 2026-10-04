@@ -2,7 +2,9 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const { WebSocket } = require('ws');
+const http = require('http');
 const { createApp } = require('../server');
+const { createPayments } = require('../lib/payments');
 
 let app, base;
 
@@ -424,6 +426,86 @@ test('amigos por nome de usuário: pedido, aceitar, conversar sem servidor e pre
   assert.equal(r.data.accepted, true);
   assert.equal((await call('GET', '/api/friends', null, dani)).data.friends.length, 1);
   sc.ws.close(); sd.ws.close();
+});
+
+test('mensalidade pelo Mercado Pago (servidor de mentira)', async () => {
+  // Mercado Pago de mentira: guarda as preferências criadas e devolve os pagamentos da lista
+  const mpPayments = [];
+  const prefs = [];
+  const mp = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const u = new URL(req.url, 'http://x');
+      const out = (code, data) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
+      if (req.headers.authorization !== 'Bearer TESTE') return out(401, { message: 'token' });
+      if (req.method === 'POST' && u.pathname === '/checkout/preferences') { prefs.push(JSON.parse(body)); return out(201, { id: 'p1', init_point: 'https://mp.test/pagar/p1' }); }
+      if (u.pathname === '/v1/payments/search') return out(200, { results: mpPayments.filter((p) => p.external_reference === u.searchParams.get('external_reference') && p.status === 'approved') });
+      const m = u.pathname.match(/^\/v1\/payments\/(\d+)$/);
+      if (m) { const p = mpPayments.find((x) => String(x.id) === m[1]); return p ? out(200, p) : out(404, {}); }
+      out(404, {});
+    });
+  });
+  await new Promise((r) => mp.listen(0, r));
+  const pay = createApp({ dbFile: ':memory:', dbUrl: '', payments: createPayments({ token: 'TESTE', price: 15, apiBase: `http://127.0.0.1:${mp.address().port}`, publicUrl: 'https://st.test' }) });
+  await new Promise((r) => pay.server.listen(0, r));
+  const pbase = `http://127.0.0.1:${pay.server.address().port}`;
+  const pcall = async (method, path, body, token) => {
+    const res = await fetch(pbase + path, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    return { status: res.status, data: await res.json() };
+  };
+  try {
+    const t = (await pcall('POST', '/api/register', { username: 'eva', password: '123456' })).data.token;
+    let r = await pcall('GET', '/api/me', null, t);
+    assert.equal(r.data.billing.locked, true);
+    assert.equal(r.data.billing.price, 15);
+    assert.equal((await pcall('POST', '/api/servers', { name: 'x' }, t)).status, 402, 'sem pagar não usa');
+    const closed = await new Promise((resolve) => {
+      const ws = new WebSocket(`${pbase.replace('http', 'ws')}/ws?token=${t}`);
+      ws.on('close', (code) => resolve(code));
+    });
+    assert.equal(closed, 4002);
+
+    r = await pcall('POST', '/api/payment', null, t);
+    assert.equal(r.data.url, 'https://mp.test/pagar/p1');
+    const evaId = r.data && Number(prefs[0].external_reference.slice(5));
+    assert.equal(prefs[0].items[0].unit_price, 15);
+    assert.equal(prefs[0].notification_url, 'https://st.test/api/payment/webhook');
+
+    // Pagamento pendente ou de valor menor não libera
+    mpPayments.push({ id: 101, status: 'pending', external_reference: `user-${evaId}`, currency_id: 'BRL', transaction_amount: 15 });
+    mpPayments.push({ id: 102, status: 'approved', external_reference: `user-${evaId}`, currency_id: 'BRL', transaction_amount: 1 });
+    r = await pcall('POST', '/api/payment/check', null, t);
+    assert.equal(r.data.billing.locked, true);
+
+    // Aviso do Mercado Pago com pagamento aprovado libera 30 dias
+    mpPayments.push({ id: 103, status: 'approved', external_reference: `user-${evaId}`, currency_id: 'BRL', transaction_amount: 15 });
+    assert.equal((await pcall('POST', '/api/payment/webhook?type=payment&data.id=103', { type: 'payment', data: { id: '103' } })).status, 200);
+    r = await pcall('GET', '/api/me', null, t);
+    assert.equal(r.data.billing.locked, false);
+    const until = r.data.billing.paidUntil;
+    assert.ok(Math.abs(until - (Date.now() + 30 * 864e5)) < 60_000, '30 dias');
+    assert.equal((await pcall('POST', '/api/servers', { name: 'x' }, t)).status, 200);
+
+    // O mesmo pagamento não conta duas vezes; um novo soma mais 30 dias
+    await pcall('POST', '/api/payment/webhook', { type: 'payment', data: { id: '103' } });
+    r = await pcall('POST', '/api/payment/check', null, t);
+    assert.equal(r.data.credited, 0);
+    assert.equal(r.data.billing.paidUntil, until);
+    mpPayments.push({ id: 104, status: 'approved', external_reference: `user-${evaId}`, currency_id: 'BRL', transaction_amount: 15 });
+    r = await pcall('POST', '/api/payment/check', null, t);
+    assert.equal(r.data.credited, 1);
+    assert.equal(r.data.billing.paidUntil, until + 30 * 864e5);
+  } finally {
+    pay.close();
+    mp.close();
+  }
+});
+
+test('sem a chave do Mercado Pago, criar conta continua grátis', async () => {
+  const r = await call('GET', '/api/me', null, ana);
+  assert.equal(r.data.billing.enabled, false);
+  assert.equal(r.data.billing.locked, false);
 });
 
 test('link para baixar o app do Windows', async () => {

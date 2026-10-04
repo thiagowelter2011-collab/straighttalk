@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { openDb } = require('./lib/db');
 const media = require('./lib/media');
+const { createPayments } = require('./lib/payments');
 
 const PUBLIC = path.join(__dirname, 'public');
 const DOWNLOAD_BASE = 'https://github.com/thiagowelter2011-collab/straighttalk/releases/latest/download';
@@ -50,6 +51,7 @@ function createApp({
   dbFile = process.env.DB_FILE || path.join(__dirname, 'data', 'straighttalk.db'),
   dbUrl = process.env.DATABASE_URL,
   dbToken = process.env.DATABASE_AUTH_TOKEN,
+  payments = createPayments(),
 } = {}) {
   const db = openDb({ file: dbFile, url: dbUrl, authToken: dbToken });
   const now = () => Date.now();
@@ -76,8 +78,33 @@ function createApp({
 
   async function userFromToken(token) {
     if (!token) return null;
-    return (await db.get(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage, u.avatar_key AS avatarKey
-              FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, String(token))) || null;
+    const row = await db.get(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage, u.avatar_key AS avatarKey,
+                u.must_pay AS mustPay, u.paid_until AS paidUntil
+              FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, String(token));
+    if (!row) return null;
+    const { mustPay, paidUntil, ...user } = row;
+    Object.defineProperty(user, 'billing', { value: { mustPay: !!mustPay, paidUntil: paidUntil ? Number(paidUntil) : null } });
+    return user;
+  }
+
+  /* ---------------- Mensalidade ---------------- */
+
+  const MONTH = 30 * 24 * 60 * 60 * 1000;
+
+  // Conta bloqueada: criada com a cobrança ligada e sem mensalidade em dia
+  const locked = (user) => payments.enabled && user.billing.mustPay && !(user.billing.paidUntil > now());
+
+  function billingInfo(user) {
+    return { enabled: payments.enabled, price: payments.price, mustPay: user.billing.mustPay, paidUntil: user.billing.paidUntil, locked: locked(user) };
+  }
+
+  // Cada pagamento aprovado soma 30 dias (a partir de hoje ou do fim do mês já pago); o mesmo pagamento só conta uma vez
+  async function credit({ userId, paymentId, amount }) {
+    const r = await db.run('INSERT OR IGNORE INTO payments (id, user_id, amount, created_at) VALUES (?, ?, ?, ?)', paymentId, userId, amount, now());
+    if (!r.changes) return false;
+    const t = now();
+    await db.run('UPDATE users SET paid_until = MAX(COALESCE(paid_until, 0), ?) + ? WHERE id = ?', t, MONTH, userId);
+    return true;
   }
 
   /* ---------------- Consultas ---------------- */
@@ -507,10 +534,10 @@ function createApp({
   }
 
   const routes = [];
-  const route = (method, pattern, handler, { auth = true, raw = false } = {}) => {
+  const route = (method, pattern, handler, { auth = true, raw = false, unpaid = false } = {}) => {
     const keys = [];
     const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-    routes.push({ method, re, keys, handler, auth, raw });
+    routes.push({ method, re, keys, handler, auth, raw, unpaid });
   };
 
   route('POST', '/api/register', async ({ body, ip }) => {
@@ -521,7 +548,8 @@ function createApp({
     const password = String(body.password || '');
     if (password.length < 6) throw new HttpError(400, 'A senha precisa ter pelo menos 6 caracteres.');
     if (await db.get('SELECT 1 FROM users WHERE username = ?', username)) throw new HttpError(409, 'Esse usuário já existe.');
-    const { lastInsertRowid } = await db.run('INSERT INTO users (username, display_name, pass_hash, created_at) VALUES (?, ?, ?, ?)', username, displayName, hashPassword(password), now());
+    const { lastInsertRowid } = await db.run('INSERT INTO users (username, display_name, pass_hash, created_at, must_pay) VALUES (?, ?, ?, ?, ?)',
+      username, displayName, hashPassword(password), now(), payments.enabled ? 1 : 0);
     return { token: await newSession(lastInsertRowid) };
   }, { auth: false });
 
@@ -538,13 +566,51 @@ function createApp({
   route('POST', '/api/logout', async ({ token }) => {
     await db.run('DELETE FROM sessions WHERE token = ?', token);
     return { ok: true };
-  });
+  }, { unpaid: true });
 
-  route('GET', '/api/me', async ({ user }) => ({
-    user,
-    servers: await listServers(user.id),
-    media: media.clientConfig(user.id),
-  }));
+  route('GET', '/api/me', async ({ user }) => {
+    const billing = billingInfo(user);
+    if (billing.locked) return { user, billing, servers: [] };
+    return { user, billing, servers: await listServers(user.id), media: media.clientConfig(user.id) };
+  }, { unpaid: true });
+
+  /* ---------------- Mensalidade ---------------- */
+
+  route('POST', '/api/payment', async ({ user }) => {
+    if (!payments.enabled) throw new HttpError(400, 'A cobrança não está ligada.');
+    try {
+      return { url: await payments.checkout(user) };
+    } catch (err) {
+      console.error(err);
+      throw new HttpError(502, 'Não foi possível abrir o pagamento agora. Tente de novo em instantes.');
+    }
+  }, { unpaid: true });
+
+  // "Já paguei": procura no Mercado Pago pagamentos aprovados que ainda não foram contados
+  route('POST', '/api/payment/check', async ({ user }) => {
+    if (!payments.enabled) return { billing: billingInfo(user), credited: 0 };
+    let credited = 0;
+    try {
+      for (const p of await payments.findApproved(user.id)) if (await credit(p)) credited++;
+    } catch (err) {
+      console.error(err);
+      throw new HttpError(502, 'Não foi possível consultar o Mercado Pago agora. Tente de novo em instantes.');
+    }
+    const row = await db.get('SELECT paid_until AS paidUntil FROM users WHERE id = ?', user.id);
+    user.billing.paidUntil = row.paidUntil ? Number(row.paidUntil) : null;
+    return { billing: billingInfo(user), credited };
+  }, { unpaid: true });
+
+  // Aviso automático do Mercado Pago quando um pagamento muda
+  route('POST', '/api/payment/webhook', async ({ body, query }) => {
+    if (!payments.enabled) return { ok: true };
+    const type = body.type || query.get('type') || query.get('topic');
+    const id = body.data?.id || query.get('data.id') || query.get('id');
+    if (type !== 'payment' || !id) return { ok: true };
+    const p = await payments.fromWebhook(id);
+    if (p) await credit(p);
+    return { ok: true };
+  }, { auth: false });
 
   route('PATCH', '/api/me', async ({ user, body }) => {
     if ('displayName' in body) {
@@ -1003,6 +1069,7 @@ function createApp({
       await db.ready;
       const user = await userFromToken(token);
       if (r.auth && !user) throw new HttpError(401, 'Faça login de novo.');
+      if (r.auth && !r.unpaid && locked(user)) throw new HttpError(402, 'Sua mensalidade não está em dia.');
       const body = !r.raw && ['POST', 'PATCH', 'PUT'].includes(req.method) ? await readBody(req) : {};
       const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
       const out = await r.handler({ req, user, token, body, params, query: url.searchParams, ip });
@@ -1026,6 +1093,7 @@ function createApp({
     try { await db.ready; user = await userFromToken(url.searchParams.get('token')); } catch (err) { console.error(err); }
     ws.off('message', buffer);
     if (!user) return ws.close(4001, 'unauthorized');
+    if (locked(user)) return ws.close(4002, 'payment');
     if (ws.readyState !== ws.OPEN) return;
 
     const conn = { id: crypto.randomUUID(), user, ws, voice: null, alive: true };

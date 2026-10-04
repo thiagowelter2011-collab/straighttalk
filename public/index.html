@@ -59,6 +59,20 @@
     </form>
   </div>
 
+  <!-- ============ Mensalidade ============ -->
+  <div id="paywall" class="auth hidden">
+    <div class="auth-card paywall-card">
+      <h1><b>Straight</b>Talk</h1>
+      <p id="pay-title" class="pay-title">Falta só a mensalidade</p>
+      <div class="pay-price"><span id="pay-price"></span><small>/mês</small></div>
+      <p class="muted">Pague com Pix, cartão ou boleto pelo Mercado Pago. Cada pagamento libera 30 dias de chat, voz, câmera e tela.</p>
+      <button type="button" class="btn primary" id="pay-go">Pagar com Mercado Pago</button>
+      <button type="button" class="btn" id="pay-check">Já paguei</button>
+      <p id="pay-msg" class="muted small" role="status"></p>
+      <p class="muted small">Entrou com a conta errada? <a href="#" id="pay-logout">Sair</a></p>
+    </div>
+  </div>
+
   <!-- ============ App ============ -->
   <div id="app" class="app hidden">
     <!-- Coluna de servidores -->
@@ -250,6 +264,10 @@
       <div class="avatar-row">Foto de perfil:
         <button type="button" class="btn small" id="set-avatar-pick" data-icon="image" data-icon-size="15">Escolher foto</button>
         <button type="button" class="btn small danger hidden" id="set-avatar-remove">Remover</button>
+      </div>
+      <div id="set-billing" class="set-billing hidden">
+        <span id="set-billing-text"></span>
+        <button type="button" class="btn small primary" id="set-billing-pay">Pagar mais 30 dias</button>
       </div>
       <label class="radio"><input type="checkbox" id="set-notify"> Avisos na área de trabalho quando chegar mensagem com a janela minimizada</label>
       <label class="radio"><input type="checkbox" id="set-sounds"> Sons de mensagem, contato online e chamar atenção</label>

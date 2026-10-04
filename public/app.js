@@ -58,6 +58,7 @@ async function api(method, path, body) {
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && S.user) { logout(); throw new Error('Sessão expirada.'); }
+  if (res.status === 402 && S.user) { location.reload(); throw new Error(data.error || 'Mensalidade vencida.'); }
   if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
   return data;
 }
@@ -116,6 +117,8 @@ async function logout() {
   S.messages.clear();
   S.hasMore.clear();
   S.dms = [];
+  S.friends = { friends: [], incoming: [], outgoing: [] };
+  S.billing = {};
   S.peers.clear();
   S.dmUserId = null;
   S.view = 'empty';
@@ -129,6 +132,9 @@ async function logout() {
 
 async function start() {
   const me = await api('GET', '/api/me');
+  S.billing = me.billing || {};
+  if (S.billing.locked) return showPaywall(me.user);
+  $('#paywall').classList.add('hidden');
   S.user = me.user;
   S.media = me.media;
   S.servers = me.servers;
@@ -139,6 +145,9 @@ async function start() {
   connectWs();
   loadDms();
   loadFriends();
+  renderBilling();
+  warnBilling();
+  if (new URLSearchParams(location.search).has('pagamento')) { history.replaceState(null, '', '/'); checkPayment(true); }
   await handlePendingInvite();
   const target = S.servers.find((s) => s.id === S.serverId) || S.servers[0];
   if (target) await selectServer(target.id); else renderAll();
@@ -159,6 +168,108 @@ async function boot() {
   } catch {
     showAuth();
   }
+}
+
+/* ================= Mensalidade ================= */
+
+const money = (v) => Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const day = (t) => new Date(t).toLocaleDateString('pt-BR');
+let payPoll = null;
+
+function showPaywall(user) {
+  $('#auth').classList.add('hidden');
+  $('#app').classList.add('hidden');
+  $('#paywall').classList.remove('hidden');
+  $('#pay-price').textContent = money(S.billing.price);
+  $('#pay-title').textContent = S.billing.paidUntil
+    ? `Sua mensalidade venceu em ${day(S.billing.paidUntil)}`
+    : `Oi, ${user.displayName}! Falta só a mensalidade`;
+  $('#pay-msg').textContent = '';
+  // Voltou do Mercado Pago: confere na hora
+  if (new URLSearchParams(location.search).has('pagamento')) {
+    history.replaceState(null, '', '/');
+    checkPayment(true);
+  }
+}
+
+async function openPayment() {
+  const { url } = await api('POST', '/api/payment');
+  // No app do Windows o link abre no navegador; no site, numa aba nova
+  const w = window.open(url, '_blank');
+  if (!w && !window.desktop) location.href = url;
+}
+
+// quiet: conferência automática, sem mensagem se ainda não caiu
+async function checkPayment(quiet) {
+  try {
+    const { billing } = await api('POST', '/api/payment/check');
+    S.billing = billing;
+    if (!billing.locked) {
+      clearInterval(payPoll);
+      payPoll = null;
+      if (!$('#paywall').classList.contains('hidden')) {
+        $('#paywall').classList.add('hidden');
+        await start();
+      }
+      toast(`Pagamento confirmado! Liberado até ${day(billing.paidUntil)}.`);
+      renderBilling();
+      return true;
+    }
+    if (!quiet) $('#pay-msg').textContent = 'Ainda não encontramos o pagamento. Pix costuma cair em segundos; cartão pode levar alguns minutos.';
+  } catch (err) {
+    if (!quiet) $('#pay-msg').textContent = err.message;
+  }
+  return false;
+}
+
+// Depois de abrir o pagamento, confere sozinho por 15 minutos
+function watchPayment() {
+  clearInterval(payPoll);
+  const until = Date.now() + 15 * 60_000;
+  payPoll = setInterval(() => {
+    if (Date.now() > until) { clearInterval(payPoll); payPoll = null; return; }
+    if (!document.hidden) checkPayment(true);
+  }, 8000);
+}
+
+$('#pay-go').onclick = async () => {
+  $('#pay-go').disabled = true;
+  try {
+    await openPayment();
+    $('#pay-msg').textContent = 'Abrimos o Mercado Pago. Assim que o pagamento for aprovado, o StraightTalk libera sozinho.';
+    watchPayment();
+  } catch (err) {
+    $('#pay-msg').textContent = err.message;
+  } finally {
+    $('#pay-go').disabled = false;
+  }
+};
+$('#pay-check').onclick = () => checkPayment(false);
+$('#pay-logout').onclick = (e) => { e.preventDefault(); $('#paywall').classList.add('hidden'); logout(); };
+window.addEventListener('focus', () => { if (payPoll || !$('#paywall').classList.contains('hidden')) checkPayment(true); });
+
+// Nas configurações: até quando está pago, e aviso quando faltam poucos dias
+function renderBilling() {
+  const b = S.billing || {};
+  const show = b.enabled && b.mustPay;
+  $('#set-billing').classList.toggle('hidden', !show);
+  if (!show) return;
+  $('#set-billing-text').textContent = `Mensalidade de ${money(b.price)} paga até ${day(b.paidUntil)}.`;
+}
+
+$('#set-billing-pay').onclick = async () => {
+  try {
+    await openPayment();
+    toast('Abrimos o Mercado Pago. Os 30 dias novos somam aos que você já tem.');
+    watchPayment();
+  } catch (err) { toast(err.message); }
+};
+
+function warnBilling() {
+  const b = S.billing || {};
+  if (!b.enabled || !b.mustPay || !b.paidUntil) return;
+  const days = Math.ceil((b.paidUntil - Date.now()) / 864e5);
+  if (days <= 3) toast(`Sua mensalidade vence ${days <= 1 ? 'amanhã' : `em ${days} dias`}. Renove em Configurações.`);
 }
 
 async function handlePendingInvite() {
@@ -250,6 +361,7 @@ function connectWs() {
   ws.onclose = (ev) => {
     if (S.ws !== ws) return;
     if (ev.code === 4001) return logout();
+    if (ev.code === 4002) return location.reload();
     setStatus('reconectando…');
     S.connId = null;
     setTimeout(() => { if (S.ws === ws && S.user) connectWs(); }, Math.min(1000 * 2 ** wsRetry++, 10000));
