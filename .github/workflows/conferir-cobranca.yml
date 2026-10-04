@@ -1,0 +1,30 @@
+name: Conferir cobrança
+
+# Cria uma conta de teste no site publicado e confere se a mensalidade está ligada
+# e se o Mercado Pago aceita a chave (abre um pedido de pagamento, sem pagar nada).
+on:
+  workflow_dispatch:
+
+jobs:
+  conferir:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Conferir
+        env:
+          URL: ${{ vars.STRAIGHTTALK_URL || 'https://straighttalk.onrender.com' }}
+        run: |
+          user="conferir$RANDOM$RANDOM"
+          token=$(curl -fsS --max-time 60 -H 'Content-Type: application/json' \
+            -d "{\"username\":\"$user\",\"password\":\"conferir-$RANDOM$RANDOM\",\"displayName\":\"Conferir\"}" \
+            "$URL/api/register" | jq -r .token)
+          me=$(curl -fsS -H "Authorization: Bearer $token" "$URL/api/me")
+          echo "mensalidade: $(echo "$me" | jq -c .billing)"
+          pay=$(curl -sS -X POST -H "Authorization: Bearer $token" "$URL/api/payment")
+          link=$(echo "$pay" | jq -r '.url // empty')
+          if [ -n "$link" ]; then
+            echo "Mercado Pago aceitou a chave: página de pagamento em $(echo "$link" | cut -d/ -f3)"
+          else
+            echo "Mercado Pago recusou: $(echo "$pay" | jq -r '.error // .')"
+            exit 1
+          fi
+          echo "$me" | jq -e '.billing.enabled and .billing.locked' > /dev/null
