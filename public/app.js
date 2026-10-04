@@ -282,6 +282,11 @@ async function onWs(msg) {
       const visible = S.view === 'text' && S.serverId === msg.serverId && S.textChannel[S.serverId] === m.channelId;
       if (m.userId !== S.user.id) {
         if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${preview(m)}`); }
+        const sname = S.servers.find((x) => x.id === msg.serverId)?.name || '';
+        notify(`${m.author} diz: (${sname})`, preview(m), 'ch' + m.channelId, async () => {
+          if (S.serverId !== msg.serverId) await selectServer(msg.serverId);
+          openText(m.channelId);
+        });
       }
       if (visible) appendMessage(m, m.channelId);
       else if (m.userId !== S.user.id) {
@@ -289,6 +294,7 @@ async function onWs(msg) {
         if (msg.serverId !== S.serverId) S.unreadServers.add(msg.serverId);
         renderRail();
         renderChannels();
+        updateBadge();
       }
       break;
     }
@@ -356,6 +362,10 @@ async function onWs(msg) {
       if (!mine) {
         Sounds.play('nudge');
         flashTitle(`${msg.name} chamou a sua atenção!`);
+        notify('📳 Chamar atenção', `${msg.name} chamou a sua atenção!`, 'nudge' + msg.userId, () => {
+          if (dmPeer) openDm(dmPeer);
+          else if (msg.serverId) selectServer(msg.serverId).then(() => openText(msg.channelId));
+        });
         const app = $('#app');
         app.classList.remove('nudge');
         void app.offsetWidth;
@@ -406,6 +416,7 @@ async function openText(channelId) {
   S.textChannel[S.serverId] = channelId;
   S.view = 'text';
   S.unread.delete(channelId);
+  updateBadge();
   closeDrawer();
   renderAll();
   if (!S.messages.has(channelId)) {
@@ -727,6 +738,7 @@ function onDm(msg) {
   if (!mine) {
     if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${preview(m)}`); }
     if (!visible) toast(`${m.author} diz: ${preview(m).slice(0, 80)}`);
+    notify(`${m.author} diz:`, preview(m), 'dm' + peerId, () => openDm(peerId));
   }
   if (visible) {
     if (list) appendMessage(m, key);
@@ -734,6 +746,7 @@ function onDm(msg) {
   }
   renderDmList();
   renderMembers();
+  updateBadge();
 }
 
 // Ao voltar para a janela, a conversa aberta conta como lida
@@ -742,6 +755,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function renderDmList() {
+  updateBadge();
   const ul = $('#dm-list');
   if (!ul) return;
   ul.innerHTML = '';
@@ -1361,6 +1375,7 @@ $('#btn-settings').onclick = async () => {
   $('#set-name').value = S.user.displayName;
   $('#set-noise').checked = S.settings.noiseSuppression !== false;
   $('#set-sounds').checked = S.settings.sounds !== false;
+  $('#set-notify').checked = notificationsOn() || (S.settings.notify !== false && window.Notification?.permission === 'default');
   $('#set-media').textContent = S.media.mode === 'livekit'
     ? 'Voz e tela via servidor de mídia (SFU), com TURN para redes fechadas.'
     : 'Voz e tela direto entre as pessoas (P2P)' + (S.media.iceServers.length > 1 ? ', com TURN para redes fechadas.' : '.');
@@ -1401,6 +1416,7 @@ $('#dlg-settings').addEventListener('close', async () => {
   S.settings.speakerId = $('#set-speaker').value || undefined;
   S.settings.noiseSuppression = $('#set-noise').checked;
   S.settings.sounds = $('#set-sounds').checked;
+  S.settings.notify = $('#set-notify').checked;
   localSet('st-settings', JSON.stringify(S.settings));
   S.voice?.engine.setSpeaker?.(S.settings.speakerId);
   const name = $('#set-name').value.trim();
@@ -1613,6 +1629,59 @@ function flashTitle(text) {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { clearInterval(titleTimer); titleTimer = null; document.title = 'StraightTalk'; }
 });
+
+/* ================= Avisos na área de trabalho ================= */
+
+const desktop = window.straighttalkDesktop;
+
+function notificationsOn() {
+  return S.settings.notify !== false && 'Notification' in window && Notification.permission === 'granted';
+}
+
+function askNotificationPermission() {
+  if (S.settings.notify === false || !('Notification' in window) || Notification.permission !== 'default') return;
+  Notification.requestPermission().catch(() => {});
+}
+
+// Aviso do Windows (ou do navegador) quando a janela não está na frente
+function notify(title, body, tag, onClick) {
+  if (document.hasFocus() && !document.hidden) return;
+  desktop?.attention?.();
+  if (!notificationsOn()) return;
+  try {
+    const n = new Notification(title, { body: String(body || '').slice(0, 200), tag, icon: '/icon.png', silent: true });
+    n.onclick = () => {
+      n.close();
+      window.focus();
+      desktop?.focus?.();
+      onClick?.();
+    };
+  } catch {}
+}
+
+// O navegador só deixa pedir permissão depois de um clique
+document.addEventListener('click', () => { if (S.user) askNotificationPermission(); }, { once: true });
+$('#set-notify').addEventListener('change', () => { if ($('#set-notify').checked) { S.settings.notify = true; askNotificationPermission(); } });
+
+// Número de conversas com novidade no ícone da barra de tarefas (app do Windows)
+let lastBadge = -1;
+function updateBadge() {
+  const n = S.dms.reduce((t, c) => t + (c.unread || 0), 0) + S.unread.size;
+  if (n === lastBadge) return;
+  lastBadge = n;
+  if (!desktop?.setBadge) return;
+  if (!n) return desktop.setBadge(null, '');
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d');
+  g.fillStyle = '#e8401c';
+  g.beginPath(); g.arc(16, 16, 15, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#fff';
+  g.font = `bold ${n > 9 ? 16 : 20}px Segoe UI, sans-serif`;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(n > 99 ? '99+' : String(n), 16, 17);
+  desktop.setBadge(c.toDataURL('image/png'), `${n} novas`);
+}
 
 /* ================= Utilidades ================= */
 

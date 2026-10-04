@@ -37,6 +37,14 @@ jobs:
             node -e "const f='package.json',p=require('./'+f);p.straighttalk.serverUrl=process.env.SERVER_URL;require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
           fi
           node -p "'serverUrl: ' + (require('./package.json').straighttalk.serverUrl || '(perguntar ao abrir)')"
+      - name: Versão do app igual à da Release (a atualização automática compara as duas)
+        if: inputs.versao != '' || startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          VERSAO: ${{ inputs.versao || github.ref_name }}
+        run: |
+          node -e "const f='package.json',p=require('./'+f);p.version=process.env.VERSAO.replace(/^v/,'');require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
+          node -p "'versão: ' + require('./package.json').version"
       - run: npm install
       - run: npm run dist
       - uses: actions/upload-artifact@v4
@@ -44,6 +52,7 @@ jobs:
           name: StraightTalk-Windows
           path: |
             desktop/dist/*.exe
+            desktop/dist/latest.yml
       - name: Publicar na Release
         if: startsWith(github.ref, 'refs/tags/') || inputs.versao != ''
         uses: softprops/action-gh-release@v2
@@ -51,4 +60,8 @@ jobs:
           tag_name: ${{ inputs.versao || github.ref_name }}
           name: StraightTalk ${{ inputs.versao || github.ref_name }}
           target_commitish: ${{ github.sha }}
-          files: desktop/dist/*.exe
+          # latest.yml e .blockmap: o app instalado usa para se atualizar sozinho
+          files: |
+            desktop/dist/*.exe
+            desktop/dist/*.blockmap
+            desktop/dist/latest.yml

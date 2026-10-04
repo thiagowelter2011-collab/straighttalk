@@ -2,7 +2,7 @@
 // Abre o site do StraightTalk numa janela própria e cuida do que o navegador não faz sozinho:
 // escolher qual tela/janela compartilhar (com áudio do sistema) e lembrar o endereço do servidor.
 
-const { app, BrowserWindow, session, desktopCapturer, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, session, desktopCapturer, ipcMain, shell, nativeImage, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -140,6 +140,34 @@ function pickSource(parent) {
   });
 }
 
+/* ---------------- Atualização automática ---------------- */
+
+// O instalador procura versões novas nas Releases do GitHub, baixa em segundo plano
+// e instala ao reiniciar. A versão portátil não se atualiza sozinha.
+function checkUpdates() {
+  if (!app.isPackaged || process.env.PORTABLE_EXECUTABLE_DIR) return;
+  let autoUpdater;
+  try { ({ autoUpdater } = require('electron-updater')); } catch { return; }
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('error', (err) => console.error('Atualização:', err?.message || err));
+  autoUpdater.on('update-downloaded', async (info) => {
+    const r = await dialog.showMessageBox(win, {
+      type: 'info',
+      buttons: ['Reiniciar agora', 'Depois'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Atualização do StraightTalk',
+      message: `A versão ${info.version} do StraightTalk já foi baixada.`,
+      detail: 'Reinicie para usar a versão nova. Se escolher "Depois", ela é instalada quando você fechar o app.',
+    });
+    if (r.response === 0) setImmediate(() => autoUpdater.quitAndInstall());
+  });
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  check();
+  setInterval(check, 6 * 60 * 60 * 1000);
+}
+
 /* ---------------- Inicialização ---------------- */
 
 if (!app.requestSingleInstanceLock()) {
@@ -178,7 +206,22 @@ if (!app.requestSingleInstanceLock()) {
     });
     ipcMain.handle('app:info', () => ({ version: app.getVersion(), serverUrl: serverUrl() }));
 
+    ipcMain.on('win:focus', () => {
+      if (!win) return;
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+    });
+    ipcMain.on('win:attention', () => { if (win && !win.isFocused()) win.flashFrame(true); });
+    ipcMain.on('win:badge', (_e, dataUrl, text) => {
+      if (!win || process.platform !== 'win32') return;
+      const img = typeof dataUrl === 'string' && dataUrl.startsWith('data:image/png;base64,') ? nativeImage.createFromDataURL(dataUrl) : null;
+      win.setOverlayIcon(img && !img.isEmpty() ? img : null, String(text || ''));
+    });
+
     createWindow();
+    win.on('focus', () => win.flashFrame(false));
+    checkUpdates();
   });
 
   app.on('window-all-closed', () => app.quit());
