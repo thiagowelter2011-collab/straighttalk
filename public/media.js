@@ -418,7 +418,8 @@
       const { url, token, identity } = await this.getToken(channelId);
       this.identity = identity;
       const room = new LK.Room({
-        adaptiveStream: true,
+        // Escolhe a camada de vídeo pelo tamanho real na tela (telas de alta resolução recebem a qualidade cheia)
+        adaptiveStream: { pixelDensity: 'screen' },
         dynacast: true,
         audioCaptureDefaults: MIC_CONSTRAINTS(this.settings.micId, noiseMode(this.settings)),
         audioOutput: this.settings.speakerId ? { deviceId: this.settings.speakerId } : undefined,
@@ -429,6 +430,8 @@
 
       room.on(E.TrackSubscribed, (track, pub, participant) => {
         const id = participant.identity;
+        // Toca assim que chega, sem guardar no buffer (igual ao modo P2P)
+        try { track.setPlayoutDelay?.(0); } catch {}
         if (track.kind === 'audio') {
           const el = track.attach();
           document.getElementById('audio-sink').appendChild(el);
