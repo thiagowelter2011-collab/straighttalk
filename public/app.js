@@ -8,6 +8,9 @@ const el = (tag, props = {}, ...children) => {
   return node;
 };
 
+// Dentro do app do Windows não precisa do botão de baixar o app
+if (window.straighttalkDesktop?.isDesktop) document.documentElement.classList.add('desktop');
+
 const S = {
   token: localGet('st-token'),
   user: null,

@@ -167,6 +167,9 @@ input:focus, select:focus, textarea:focus { border-color: #3c8ee0; box-shadow: 0
   content: ""; position: absolute; right: -3px; top: -3px; width: 11px; height: 11px; border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #fff 0, rgba(255,255,255,0) 45%), #f39c12; box-shadow: 0 0 0 1px #fff;
 }
+.rail-btn.download { margin-top: auto; text-decoration: none; font-size: 19px; }
+.download-btn { justify-self: center; text-decoration: none; margin-top: 4px; }
+.desktop .web-only { display: none !important; }
 .rail-sep { width: 34px; height: 1px; background: #a9c6e2; box-shadow: 0 1px 0 #fff; }
 
 /* Lista de canais (com o "eu" no topo, como na lista de contatos) */

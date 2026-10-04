@@ -223,6 +223,14 @@ test('status, mensagem pessoal e chamar atenção (estilo MSN)', async () => {
   a.ws.close(); b.ws.close();
 });
 
+test('link para baixar o app do Windows', async () => {
+  const res = await fetch(base + '/baixar', { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.match(res.headers.get('location'), /releases\/latest\/download\/StraightTalk-instalador\.exe$/);
+  const p = await fetch(base + '/baixar/portatil', { redirect: 'manual' });
+  assert.match(p.headers.get('location'), /StraightTalk-portatil\.exe$/);
+});
+
 test('sair e apagar servidor', async () => {
   assert.equal((await call('POST', `/api/servers/${serverId}/leave`, null, ana)).status, 400, 'dono não sai');
   assert.equal((await call('POST', `/api/servers/${serverId}/leave`, null, bia)).status, 200);

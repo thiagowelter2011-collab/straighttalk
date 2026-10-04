@@ -13,6 +13,7 @@ const { openDb } = require('./lib/db');
 const media = require('./lib/media');
 
 const PUBLIC = path.join(__dirname, 'public');
+const DOWNLOAD_BASE = 'https://github.com/thiagowelter2011-collab/straighttalk/releases/latest/download';
 const LIVEKIT_UMD = path.join(path.dirname(require.resolve('livekit-client')), 'livekit-client.umd.js');
 
 const MIME = {
@@ -569,6 +570,12 @@ function createApp({
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
+    // Link curto para baixar o app do Windows (sempre a versão mais nova publicada no GitHub)
+    if (url.pathname === '/baixar' || url.pathname === '/baixar/portatil') {
+      const file = url.pathname.endsWith('portatil') ? 'StraightTalk-portatil.exe' : 'StraightTalk-instalador.exe';
+      res.writeHead(302, { Location: process.env.DOWNLOAD_URL_BASE ? `${process.env.DOWNLOAD_URL_BASE}/${file}` : `${DOWNLOAD_BASE}/${file}` });
+      return res.end();
+    }
     if (url.pathname === '/healthz') return json(res, 200, { ok: true, version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null });
     if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
 

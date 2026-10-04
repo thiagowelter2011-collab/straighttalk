@@ -1,7 +1,7 @@
 {
   "name": "straighttalk-desktop",
   "productName": "StraightTalk",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "App do StraightTalk para Windows",
   "main": "main.js",
   "private": true,
@@ -27,14 +27,14 @@
       "icon": "build/icon.png"
     },
     "nsis": {
-      "artifactName": "StraightTalk-${version}-instalador.${ext}",
+      "artifactName": "StraightTalk-instalador.${ext}",
       "oneClick": true,
       "perMachine": false,
       "createDesktopShortcut": true,
       "shortcutName": "StraightTalk"
     },
     "portable": {
-      "artifactName": "StraightTalk-${version}-portatil.exe"
+      "artifactName": "StraightTalk-portatil.exe"
     }
   }
 }
