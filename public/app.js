@@ -8,6 +8,9 @@ const el = (tag, props = {}, ...children) => {
   return node;
 };
 
+const { icon, iconEl } = window.Icons;
+Icons.fill();
+
 // Dentro do app do Windows não precisa do botão de baixar o app
 if (window.straighttalkDesktop?.isDesktop) document.documentElement.classList.add('desktop');
 
@@ -496,7 +499,7 @@ function messageNode(m, prev) {
   const node = el('div', { className: 'msg' + (first ? ' first' : '') });
   node.dataset.id = m.id;
   const avatar = el('div', { className: 'avatar' });
-  paintAvatar(avatar, m.author);
+  paintAvatar(avatar, m.author, m.authorAvatar);
   const body = el('div', { className: 'body' });
   if (first) {
     const author = el('span', { className: 'author', textContent: m.author });
@@ -512,7 +515,7 @@ function messageNode(m, prev) {
   if (m.file) body.append(fileNode(m.file));
   node.append(avatar, body);
   if (m.channelId && (m.userId === S.user.id || S.detail?.server.ownerId === S.user.id)) {
-    const del = el('button', { className: 'del', title: 'Apagar mensagem', textContent: '🗑️', type: 'button' });
+    const del = el('button', { className: 'del', title: 'Apagar mensagem', type: 'button' }, iconEl('trash', 15));
     del.onclick = async () => {
       if (!(await formDialog({ title: 'Apagar mensagem?', text: preview(m).slice(0, 200), okText: 'Apagar', danger: true }))) return;
       api('DELETE', `/api/messages/${m.id}`).catch((e) => toast(e.message));
@@ -549,7 +552,7 @@ function fileNode(f) {
     box.append(el('audio', { src: url, controls: true, preload: 'metadata' }));
   } else {
     box.append(el('a', { href: url, className: 'att-file', download: f.name },
-      el('span', { className: 'att-icon', textContent: '📄' }),
+      el('span', { className: 'att-icon' }, iconEl('file', 22)),
       el('span', { className: 'att-name', textContent: f.name }),
       el('span', { className: 'att-size', textContent: fmtSize(f.size) })));
   }
@@ -1007,7 +1010,7 @@ function renderChannels() {
 
   for (const c of S.detail.channels.filter((c) => c.type === 'text')) {
     const li = el('li', { className: 'channel' },
-      el('span', { textContent: '#' }),
+      el('span', { className: 'ch-icon' }, iconEl('hash', 16)),
       el('span', { className: 'ch-name', textContent: c.name }),
       ownerActions(c));
     if (S.view === 'text' && S.textChannel[S.serverId] === c.id) li.classList.add('active');
@@ -1019,7 +1022,7 @@ function renderChannels() {
   const vstate = S.voiceState.get(S.serverId) || {};
   for (const c of S.detail.channels.filter((c) => c.type === 'voice')) {
     const li = el('li', { className: 'channel' },
-      el('span', { textContent: '🔊' }),
+      el('span', { className: 'ch-icon' }, iconEl('volume', 16)),
       el('span', { className: 'ch-name', textContent: c.name }),
       ownerActions(c));
     if (S.view === 'voice' && S.viewVoiceChannelId === c.id) li.classList.add('active');
@@ -1044,7 +1047,7 @@ function renderChannels() {
 function ownerActions(c) {
   if (!isOwner()) return null;
   const box = el('span', { className: 'ch-actions' });
-  const ren = el('button', { title: 'Renomear', textContent: '✏️', type: 'button' });
+  const ren = el('button', { title: 'Renomear', type: 'button' }, iconEl('edit', 14));
   ren.onclick = async () => {
     const r = await formDialog({
       title: 'Renomear canal', fields: [{ name: 'name', label: 'Nome do canal', value: c.name, maxlength: 40 }], okText: 'Salvar',
@@ -1052,7 +1055,7 @@ function ownerActions(c) {
     });
     if (r) reloadDetail();
   };
-  const del = el('button', { title: 'Apagar', textContent: '🗑️', type: 'button' });
+  const del = el('button', { title: 'Apagar', type: 'button' }, iconEl('trash', 14));
   del.onclick = async () => {
     const r = await formDialog({
       title: `Apagar ${c.type === 'text' ? '#' : ''}${c.name}?`,
@@ -1073,8 +1076,8 @@ function voiceUserNode(p) {
   if (S.speaking.has(p.mediaId)) av.classList.add('speaking');
   const icons = el('span', { className: 'icons' });
   if (p.sharing) icons.append(el('span', { className: 'live', textContent: 'AO VIVO' }));
-  if (p.deafened) icons.append(el('span', { title: 'Áudio desativado', textContent: '🔕' }));
-  else if (p.muted) icons.append(el('span', { title: 'Mudo', textContent: '🔇' }));
+  if (p.deafened) icons.append(el('span', { title: 'Áudio desativado', className: 'state-ic' }, iconEl('headphones-off', 14)));
+  else if (p.muted) icons.append(el('span', { title: 'Mudo', className: 'state-ic' }, iconEl('mic-off', 14)));
   const li = el('li', { className: 'voice-user' }, av, el('span', { className: 'name', textContent: p.name }), icons);
   if (p.userId !== S.user.id) {
     li.title = 'Clique para ajustar o volume';
@@ -1103,7 +1106,7 @@ function renderMain() {
   $('#view-voice').classList.toggle('hidden', S.view !== 'voice');
   if (S.view === 'text') {
     const ch = currentChannel();
-    title.textContent = ch ? `# ${ch.name}` : '';
+    title.replaceChildren(...(ch ? [iconEl('hash', 17), ` ${ch.name}`] : []));
     input.placeholder = ch ? `Conversar em #${ch.name}` : '';
     $('#btn-nudge').title = 'Chamar a atenção de todos na conversa';
     renderMessages();
@@ -1112,14 +1115,14 @@ function renderMain() {
     const u = S.peers.get(S.dmUserId);
     const name = u?.displayName || 'Contato';
     const st = peerStatus(S.dmUserId);
-    title.textContent = `💬 ${name} (${STATUS_LABEL[st] || 'Offline'})`;
+    title.replaceChildren(iconEl('chat', 17), ` ${name}`, el('span', { className: 'title-status', textContent: STATUS_LABEL[st] || 'Offline' }));
     input.placeholder = `Conversar com ${name}`;
     $('#btn-nudge').title = `Chamar a atenção de ${name}`;
     renderMessages();
     renderTyping();
   } else if (S.view === 'voice') {
     const ch = S.detail?.channels.find((c) => c.id === S.viewVoiceChannelId);
-    title.textContent = ch ? `🔊 ${ch.name}` : '';
+    title.replaceChildren(...(ch ? [iconEl('volume', 17), ` ${ch.name}`] : []));
     renderStage();
   } else {
     title.textContent = S.detail?.server.name || '';
@@ -1167,12 +1170,12 @@ function screenTile(mediaId, scr, name) {
     if (!scr.el) video.srcObject = scr.stream;
     video.muted = true;
     video.play?.().catch(() => {});
-    const focus = el('button', { className: 'icon-btn', title: 'Destacar', textContent: '🔍', type: 'button' });
+    const focus = el('button', { className: 'icon-btn', title: 'Destacar', type: 'button' }, iconEl('search', 16));
     focus.onclick = () => toggleFocus(tile);
-    const full = el('button', { className: 'icon-btn', title: 'Tela cheia', textContent: '⛶', type: 'button' });
+    const full = el('button', { className: 'icon-btn', title: 'Tela cheia', type: 'button' }, iconEl('maximize', 16));
     full.onclick = () => tile.requestFullscreen?.();
     tile.ondblclick = () => tile.requestFullscreen?.();
-    tile.append(video, el('div', { className: 'label', textContent: `🖥️ ${name}` }), el('div', { className: 'tile-actions' }, focus, full));
+    tile.append(video, el('div', { className: 'label' }, iconEl('monitor', 14), ` ${name}`), el('div', { className: 'tile-actions' }, focus, full));
     tile._stream = scr.stream;
     tiles.set(key, tile);
   } else if (tile._stream !== scr.stream && !scr.el) {
@@ -1192,7 +1195,8 @@ function personTile(p) {
   tile.dataset.media = p.mediaId;
   tile.classList.toggle('speaking', S.speaking.has(p.mediaId));
   paintAvatar(tile.querySelector('.avatar'), p.name, p.avatarKey);
-  tile.querySelector('.label').textContent = `${p.deafened ? '🔕 ' : p.muted ? '🔇 ' : ''}${p.name}${p.userId === S.user.id ? ' (você)' : ''}`;
+  tile.querySelector('.label').replaceChildren(...(p.deafened ? [iconEl('headphones-off', 14)] : p.muted ? [iconEl('mic-off', 14)] : []),
+    `${p.name}${p.userId === S.user.id ? ' (você)' : ''}`);
   return tile;
 }
 
@@ -1240,16 +1244,16 @@ function renderMembers() {
 function updateControls() {
   for (const id of ['#btn-mic', '#vb-mic']) {
     const b = $(id);
-    b.textContent = S.muted ? '🔇' : '🎙️';
+    b.innerHTML = icon(S.muted ? 'mic-off' : 'mic', id === '#vb-mic' ? 20 : 18);
     b.classList.toggle('off', S.muted);
     b.title = S.muted ? 'Ativar microfone' : 'Silenciar microfone';
   }
   const d = $('#btn-deafen');
-  d.textContent = S.deafened ? '🔕' : '🎧';
+  d.innerHTML = icon(S.deafened ? 'headphones-off' : 'headphones');
   d.classList.toggle('off', S.deafened);
   d.title = S.deafened ? 'Ativar áudio' : 'Desativar áudio';
   const sharing = !!S.voice?.sharing;
-  $('#btn-share').textContent = sharing ? '⏹️ Parar de compartilhar' : '🖥️ Compartilhar tela';
+  $('#btn-share').innerHTML = icon(sharing ? 'monitor-x' : 'monitor', 16) + (sharing ? ' Parar de compartilhar' : ' Compartilhar tela');
   $('#btn-share').classList.toggle('on', sharing);
   $('#vb-share').classList.toggle('on', sharing);
   $('#vb-share').title = sharing ? 'Parar de compartilhar' : 'Compartilhar tela';
@@ -1392,6 +1396,7 @@ async function showInvite(s) {
 $('#btn-settings').onclick = async () => {
   $('#set-name').value = S.user.displayName;
   $('#set-noise').value = StraightTalkMedia.noiseMode(S.settings);
+  $('#set-theme').value = themeChoice();
   $('#set-sounds').checked = S.settings.sounds !== false;
   $('#set-notify').checked = notificationsOn() || (S.settings.notify !== false && window.Notification?.permission === 'default');
   $('#set-media').textContent = S.media.mode === 'livekit'
@@ -1433,6 +1438,7 @@ $('#dlg-settings').addEventListener('close', async () => {
   S.settings.micId = $('#set-mic').value || undefined;
   S.settings.speakerId = $('#set-speaker').value || undefined;
   S.settings.noiseMode = $('#set-noise').value;
+  applyTheme($('#set-theme').value);
   delete S.settings.noiseSuppression;
   S.settings.sounds = $('#set-sounds').checked;
   S.settings.notify = $('#set-notify').checked;
@@ -1648,6 +1654,23 @@ function flashTitle(text) {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { clearInterval(titleTimer); titleTimer = null; document.title = 'StraightTalk'; }
 });
+
+/* ================= Tema claro / escuro ================= */
+
+function themeChoice() { return localGet('st-theme') || 'auto'; }
+function currentTheme() {
+  const t = themeChoice();
+  return t === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : t;
+}
+function applyTheme(choice) {
+  if (choice === 'light' || choice === 'dark') { localSet('st-theme', choice); document.documentElement.dataset.theme = choice; }
+  else { localDel('st-theme'); delete document.documentElement.dataset.theme; }
+  $('#btn-theme').innerHTML = icon(currentTheme() === 'dark' ? 'sun' : 'moon');
+  $('#btn-theme').title = currentTheme() === 'dark' ? 'Mudar para o modo claro' : 'Mudar para o modo escuro';
+}
+$('#btn-theme').onclick = () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => applyTheme(themeChoice()));
+applyTheme(themeChoice());
 
 /* ================= Foto de perfil ================= */
 

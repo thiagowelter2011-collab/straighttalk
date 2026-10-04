@@ -149,12 +149,12 @@ function createApp({
   }
 
   function messagePayload(row) {
-    return { id: row.id, channelId: row.channel_id, userId: row.user_id, author: row.author, text: row.text, file: filePayload(row), createdAt: row.created_at };
+    return { id: row.id, channelId: row.channel_id, userId: row.user_id, author: row.author, authorAvatar: row.author_avatar || null, text: row.text, file: filePayload(row), createdAt: row.created_at };
   }
 
-  const MSG_SELECT = `SELECT m.*, u.display_name AS author, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size
+  const MSG_SELECT = `SELECT m.*, u.display_name AS author, u.avatar_key AS author_avatar, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size
     FROM messages m JOIN users u ON u.id = m.user_id LEFT JOIN files f ON f.id = m.file_id`;
-  const DM_SELECT = `SELECT m.*, u.display_name AS author, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size
+  const DM_SELECT = `SELECT m.*, u.display_name AS author, u.avatar_key AS author_avatar, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size
     FROM dm_messages m JOIN users u ON u.id = m.from_id LEFT JOIN files f ON f.id = m.file_id`;
 
   /* ---------------- Arquivos ---------------- */
@@ -187,7 +187,7 @@ function createApp({
   /* ---------------- Conversas privadas ---------------- */
 
   function dmPayload(row) {
-    return { id: row.id, fromId: row.from_id, toId: row.to_id, userId: row.from_id, author: row.author, text: row.text, file: filePayload(row), createdAt: row.created_at };
+    return { id: row.id, fromId: row.from_id, toId: row.to_id, userId: row.from_id, author: row.author, authorAvatar: row.author_avatar || null, text: row.text, file: filePayload(row), createdAt: row.created_at };
   }
 
   // Dá para conversar com quem está em algum servidor com você (ou com quem você já conversou)

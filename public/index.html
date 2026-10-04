@@ -5,7 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>StraightTalk</title>
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#2b7cff">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="/style.css">
+  <script>
+    // Tema claro/escuro antes de desenhar a página (sem piscar)
+    try { const t = localStorage.getItem('st-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+  </script>
 </head>
 <body>
   <!-- ============ Login / cadastro ============ -->
@@ -47,7 +55,7 @@
       <button type="submit" class="btn primary" id="auth-submit">Entrar</button>
       <p id="auth-error" class="error" role="alert"></p>
       <p class="muted small"><span id="auth-switch-text">Precisa de uma conta?</span> <a href="#" id="auth-switch">Cadastre-se</a></p>
-      <a class="btn download-btn web-only" href="/baixar">💻 Baixar o app para Windows</a>
+      <a class="btn download-btn web-only" href="/baixar" data-icon="download">Baixar o app para Windows</a>
     </form>
   </div>
 
@@ -57,25 +65,25 @@
     <nav class="rail" aria-label="Servidores">
       <div id="rail-servers" class="rail-servers"></div>
       <div class="rail-sep"></div>
-      <button class="rail-btn add" id="btn-add-server" title="Criar servidor">+</button>
-      <button class="rail-btn join" id="btn-join-server" title="Entrar com convite">🔗</button>
-      <a class="rail-btn download web-only" href="/baixar" title="Baixar o app para Windows">💻</a>
+      <button class="rail-btn add" id="btn-add-server" title="Criar servidor" data-icon="plus" data-icon-size="22"></button>
+      <button class="rail-btn join" id="btn-join-server" title="Entrar com convite" data-icon="link" data-icon-size="20"></button>
+      <a class="rail-btn download web-only" href="/baixar" title="Baixar o app para Windows" data-icon="download" data-icon-size="20"></a>
     </nav>
 
     <!-- Canais -->
     <aside class="sidebar">
       <header class="server-header">
         <span id="server-name">StraightTalk</span>
-        <button id="btn-invite" class="btn small invite-btn" title="Copiar o link de convite deste servidor">👥 Convidar</button>
-        <button id="btn-server-menu" class="icon-btn small" title="Opções do servidor">⚙️</button>
+        <button id="btn-invite" class="btn small invite-btn" title="Copiar o link de convite deste servidor" data-icon="user-plus" data-icon-size="15">Convidar</button>
+        <button id="btn-server-menu" class="icon-btn small" title="Opções do servidor" data-icon="chevron" data-icon-size="16"></button>
       </header>
       <div id="server-menu" class="menu hidden">
-        <button data-act="invite">👥 Convidar pessoas</button>
-        <button data-act="new-text" class="owner-only"># Criar canal de texto</button>
-        <button data-act="new-voice" class="owner-only">🔊 Criar canal de voz</button>
-        <button data-act="rename" class="owner-only">✏️ Renomear servidor</button>
-        <button data-act="delete" class="owner-only danger">🗑️ Apagar servidor</button>
-        <button data-act="leave" class="member-only danger">🚪 Sair do servidor</button>
+        <button data-act="invite" data-icon="user-plus" data-icon-size="16">Convidar pessoas</button>
+        <button data-act="new-text" class="owner-only" data-icon="hash" data-icon-size="16">Criar canal de texto</button>
+        <button data-act="new-voice" class="owner-only" data-icon="volume" data-icon-size="16">Criar canal de voz</button>
+        <button data-act="rename" class="owner-only" data-icon="edit" data-icon-size="16">Renomear servidor</button>
+        <button data-act="delete" class="owner-only danger" data-icon="trash" data-icon-size="16">Apagar servidor</button>
+        <button data-act="leave" class="member-only danger" data-icon="phone-off" data-icon-size="16">Sair do servidor</button>
       </div>
 
       <div class="channels" id="channels">
@@ -90,13 +98,13 @@
       <section id="voice-panel" class="voice-panel hidden">
         <div class="voice-status">
           <div>
-            <div class="voice-ok">🔊 Voz conectada</div>
+            <div class="voice-ok" data-icon="volume" data-icon-size="15">Voz conectada</div>
             <a href="#" id="voice-where" class="voice-where"></a>
           </div>
-          <button id="btn-hangup" class="icon-btn danger" title="Desconectar">📴</button>
+          <button id="btn-hangup" class="icon-btn danger" title="Desconectar" data-icon="phone-off"></button>
         </div>
         <div class="voice-actions">
-          <button id="btn-share" class="btn small">🖥️ Compartilhar tela</button>
+          <button id="btn-share" class="btn small"></button>
         </div>
       </section>
 
@@ -119,9 +127,10 @@
           </div>
         </div>
         <div class="controls">
-          <button id="btn-mic" class="icon-btn" title="Silenciar microfone">🎙️</button>
-          <button id="btn-deafen" class="icon-btn" title="Desativar áudio">🎧</button>
-          <button id="btn-settings" class="icon-btn" title="Configurações">⚙️</button>
+          <button id="btn-mic" class="icon-btn" title="Silenciar microfone"></button>
+          <button id="btn-deafen" class="icon-btn" title="Desativar áudio"></button>
+          <button id="btn-theme" class="icon-btn" title="Modo claro / escuro"></button>
+          <button id="btn-settings" class="icon-btn" title="Configurações" data-icon="settings"></button>
         </div>
       </footer>
     </aside>
@@ -129,9 +138,9 @@
     <!-- Conteúdo -->
     <main class="main">
       <header class="main-header">
-        <button id="btn-drawer" class="icon-btn mobile-only" title="Canais">☰</button>
+        <button id="btn-drawer" class="icon-btn mobile-only" title="Canais" data-icon="menu"></button>
         <span id="main-title"></span>
-        <button id="btn-members" class="icon-btn" title="Membros">👥</button>
+        <button id="btn-members" class="icon-btn" title="Contatos" data-icon="users"></button>
       </header>
 
       <section id="view-empty" class="view empty-view">
@@ -146,31 +155,31 @@
         <div id="typing" class="typing"></div>
         <form id="chat-form" class="chat-form">
           <div class="chat-tools">
-            <button type="button" id="btn-emoticons" class="icon-btn" title="Emoticons">😊<span>Emoticons</span></button>
-            <button type="button" id="btn-attach" class="icon-btn" title="Enviar imagem ou arquivo (até 8 MB). Também dá para colar ou arrastar.">📎<span>Enviar arquivo</span></button>
+            <button type="button" id="btn-emoticons" class="icon-btn" title="Emoticons" data-icon="smile"><span>Emoticons</span></button>
+            <button type="button" id="btn-attach" class="icon-btn" title="Enviar imagem ou arquivo (até 8 MB). Também dá para colar ou arrastar." data-icon="paperclip"><span>Arquivo</span></button>
             <input type="file" id="file-input" multiple hidden>
-            <button type="button" id="btn-nudge" class="icon-btn" title="Chamar a atenção de todos na conversa">📳<span>Chamar atenção</span></button>
+            <button type="button" id="btn-nudge" class="icon-btn" title="Chamar a atenção de todos na conversa" data-icon="vibrate"><span>Chamar atenção</span></button>
           </div>
           <div id="emoticons" class="emoticons hidden"></div>
           <textarea id="chat-input" rows="2" maxlength="4000" placeholder="Digite sua mensagem aqui" autocomplete="off"></textarea>
-          <button type="submit" id="btn-send" class="btn">Enviar</button>
+          <button type="submit" id="btn-send" class="btn primary" title="Enviar (Enter)" data-icon="send"><span>Enviar</span></button>
         </form>
       </section>
 
       <section id="view-voice" class="view voice-view hidden">
         <div id="stage" class="stage"></div>
         <div class="voice-bar">
-          <button id="vb-mic" class="round-btn" title="Microfone">🎙️</button>
-          <button id="vb-share" class="round-btn" title="Compartilhar tela">🖥️</button>
+          <button id="vb-mic" class="round-btn" title="Microfone"></button>
+          <button id="vb-share" class="round-btn" title="Compartilhar tela" data-icon="monitor" data-icon-size="20"></button>
           <button id="vb-join" class="btn primary hidden">Entrar na chamada</button>
-          <button id="vb-hangup" class="round-btn danger" title="Sair da chamada">📴</button>
+          <button id="vb-hangup" class="round-btn danger" title="Sair da chamada" data-icon="phone-off" data-icon-size="20"></button>
         </div>
       </section>
     </main>
 
     <!-- Membros -->
     <aside id="members" class="members">
-      <div class="members-title">👥 Contatos</div>
+      <div class="members-title" data-icon="users" data-icon-size="17">Contatos</div>
       <div id="members-list"></div>
     </aside>
   </div>
@@ -214,6 +223,13 @@
       <label>Saída de áudio
         <select id="set-speaker"></select>
       </label>
+      <label>Tema
+        <select id="set-theme">
+          <option value="auto">Automático (igual ao sistema)</option>
+          <option value="light">Claro</option>
+          <option value="dark">Escuro</option>
+        </select>
+      </label>
       <label>Supressão de ruído
         <select id="set-noise">
           <option value="ai">Forte, com IA (tira teclado, ventilador e barulho de fundo)</option>
@@ -222,7 +238,7 @@
         </select>
       </label>
       <div class="avatar-row">Foto de perfil:
-        <button type="button" class="btn small" id="set-avatar-pick">🖼️ Escolher foto</button>
+        <button type="button" class="btn small" id="set-avatar-pick" data-icon="image" data-icon-size="15">Escolher foto</button>
         <button type="button" class="btn small danger hidden" id="set-avatar-remove">Remover</button>
       </div>
       <label class="radio"><input type="checkbox" id="set-notify"> Avisos na área de trabalho quando chegar mensagem com a janela minimizada</label>
@@ -240,6 +256,7 @@
   <div id="audio-sink" hidden></div>
 
   <script src="/vendor/livekit-client.js"></script>
+  <script src="/icons.js"></script>
   <script src="/media.js"></script>
   <script src="/app.js"></script>
 </body>

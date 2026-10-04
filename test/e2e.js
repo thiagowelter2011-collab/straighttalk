@@ -74,7 +74,7 @@ const tag = Date.now().toString(36);
 
   // Conversa particular: clicar no contato abre um chat só entre os dois
   await ana.click('.member.clickable >> text=Bia');
-  await ana.waitForSelector('#main-title >> text=💬 Bia');
+  await ana.waitForSelector('#main-title >> text=Bia');
   await ana.fill('#chat-input', 'segredo só nosso ;)');
   await ana.press('#chat-input', 'Enter');
   await bia.waitForSelector('#dm-list .channel.dm.unread .badge >> text=1');
@@ -155,7 +155,7 @@ const tag = Date.now().toString(36);
   await bia.waitForFunction(() => !document.querySelector('#stage .tile.screen'), null, { timeout: 10000 });
   console.log('parar compartilhamento ok');
   await ana.click('#btn-mic');
-  await bia.waitForFunction(() => [...document.querySelectorAll('.voice-user')].some((li) => li.textContent.includes('Ana') && li.textContent.includes('🔇')), null, { timeout: 5000 });
+  await bia.waitForFunction(() => [...document.querySelectorAll('.voice-user')].some((li) => li.textContent.includes('Ana') && li.querySelector('.state-ic')), null, { timeout: 5000 });
   console.log('mudo ok');
   await caio.click('#btn-hangup');
   await bia.waitForFunction(() => document.querySelectorAll('#stage .tile.person').length === 2, null, { timeout: 5000 });
