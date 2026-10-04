@@ -35,6 +35,7 @@ const S = {
   unread: new Set(),            // channelIds
   mentions: new Set(),          // channelIds com @menção a você ainda não vista
   unreadServers: new Set(),
+  voiceModes: new Map(),        // channelId -> 'p2p' | 'livekit'
   voiceState: new Map(),        // serverId -> { channelId: participants[] }
   voice: null,                  // { serverId, channelId, engine, mediaId, sharing, screenStreamId }
   muted: localGet('st-muted') === '1',
@@ -473,7 +474,16 @@ async function onWs(msg) {
       if (c && c.unread) { c.unread = 0; renderDmList(); renderMembers(); }
       break;
     }
+    case 'voice-mode': {
+      // A chamada mudou de modo (cresceu ou a conexão direta falhou): entra de novo no modo certo
+      if (S.voice?.channelId !== msg.channelId || S.voice.mode === msg.mode) break;
+      const wasSharing = S.voice.sharing, hadCamera = S.voice.camera;
+      await joinVoice(msg.channelId, msg.mode, { serverId: S.voice.serverId, channelName: S.voice.channelName });
+      if (wasSharing || hadCamera) toast('A chamada passou para o servidor de mídia. Ligue a tela/câmera de novo.');
+      break;
+    }
     case 'voice': {
+      if (msg.mode) S.voiceModes.set(msg.channelId, msg.mode); else S.voiceModes.delete(msg.channelId);
       const st = S.voiceState.get(msg.serverId) || {};
       st[msg.channelId] = msg.participants;
       S.voiceState.set(msg.serverId, st);
@@ -1473,16 +1483,30 @@ function engineCallbacks() {
     onMicError() {
       toast('Sem acesso ao microfone. Você entra só ouvindo.');
     },
+    onP2PFailed() {
+      if (S.voice?.mode === 'p2p' && !S.voice.p2pFailed) { S.voice.p2pFailed = true; wsSend({ type: 'voice-p2p-failed' }); }
+    },
   };
 }
 
-async function joinVoice(channelId) {
-  if (S.voice?.channelId === channelId) { showVoiceView(channelId); return; }
+// Chamada pequena vai direto entre as pessoas (P2P); grande, pelo servidor de mídia (LiveKit)
+function pickVoiceMode(channelId) {
+  if (S.media.mode !== 'livekit') return 'p2p';
+  if (!S.media.p2pMax) return 'livekit';
+  const people = ((S.voiceState.get(S.serverId) || {})[channelId] || []).filter((p) => p.userId !== S.user.id).length;
+  if (people && S.voiceModes.get(channelId) === 'livekit') return 'livekit';
+  return people + 1 <= S.media.p2pMax ? 'p2p' : 'livekit';
+}
+
+async function joinVoice(channelId, forcedMode, again) {
+  if (S.voice?.channelId === channelId && !forcedMode) { showVoiceView(channelId); return; }
   if (S.voice) leaveVoice();
   if (!S.connId) { toast('Ainda conectando, tente de novo.'); return; }
-  const ch = S.detail.channels.find((c) => c.id === channelId);
+  const ch = again ? { name: again.channelName } : S.detail.channels.find((c) => c.id === channelId);
+  const serverId = again ? again.serverId : S.serverId;
   const settings = { ...S.settings };
-  const engine = S.media.mode === 'livekit'
+  const mode = forcedMode || pickVoiceMode(channelId);
+  const engine = mode === 'livekit'
     ? new StraightTalkMedia.LiveKitEngine({
         settings,
         callbacks: engineCallbacks(),
@@ -1497,8 +1521,8 @@ async function joinVoice(channelId) {
       });
   engine.muted = S.muted;
   engine.deafened = S.deafened;
-  S.voice = { serverId: S.serverId, channelId, channelName: ch?.name, engine, mediaId: null, sharing: false, screenStreamId: null, camera: false, cameraStreamId: null };
-  showVoiceView(channelId);
+  S.voice = { serverId, channelId, channelName: ch?.name, engine, mode, mediaId: null, sharing: false, screenStreamId: null, camera: false, cameraStreamId: null };
+  if (!again) showVoiceView(channelId);
   try {
     const mediaId = await engine.join(channelId);
     if (S.voice?.engine !== engine) { engine.leave(); return; }
@@ -1506,7 +1530,7 @@ async function joinVoice(channelId) {
     engine.setMuted(S.muted);
     engine.setDeafened(S.deafened);
     for (const [uid, v] of Object.entries(S.volumes)) applyUserVolume(Number(uid), v);
-    wsSend({ type: 'voice-join', channelId, mediaId, muted: S.muted, deafened: S.deafened });
+    wsSend({ type: 'voice-join', channelId, mediaId, mode, muted: S.muted, deafened: S.deafened });
   } catch (err) {
     console.error(err);
     if (S.voice?.engine === engine) leaveVoice();
@@ -2314,7 +2338,7 @@ $('#btn-settings').onclick = async () => {
   $('#set-sounds').checked = S.settings.sounds !== false;
   $('#set-notify').checked = notificationsOn() || (S.settings.notify !== false && window.Notification?.permission === 'default');
   $('#set-media').textContent = S.media.mode === 'livekit'
-    ? 'Voz e tela via servidor de mídia (SFU), com TURN para redes fechadas.'
+    ? (S.media.p2pMax ? `Chamadas de até ${S.media.p2pMax} pessoas vão direto entre vocês (menos atraso); maiores, ou se a conexão direta falhar, pelo servidor de mídia.` : 'Voz e tela via servidor de mídia (SFU), com TURN para redes fechadas.')
     : 'Voz e tela direto entre as pessoas (P2P)' + (S.media.iceServers.length > 1 ? ', com TURN para redes fechadas.' : '.');
   try {
     let devices = await navigator.mediaDevices.enumerateDevices();

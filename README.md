@@ -24,7 +24,7 @@ Chat de texto, voz e compartilhamento de tela ao mesmo tempo, com cara de mensag
 - **Mensalidade (opcional):** cobrança mensal pelo Mercado Pago (Pix, cartão ou boleto), desligada até configurar a chave. Passo a passo em [`deploy/MENSALIDADE.md`](deploy/MENSALIDADE.md)
 - **Contas** com usuário e senha
 - **Servidores** com convite por link, **canais de texto** (com histórico) e **canais de voz**
-- **Voz** com indicador de quem fala, mudo, desativar áudio e volume por pessoa
+- **Voz** com indicador de quem fala, mudo, desativar áudio e volume por pessoa; chamadas de até 4 pessoas vão direto entre vocês (P2P, menos atraso) e as maiores pelo LiveKit (`VOICE_P2P_MAX` muda o limite; 0 desliga)
 - **Compartilhamento de tela** de 720p até 4K, em modo Jogo (60 fps) ou Texto (nitidez), com áudio do sistema, grátis para todos; quem tem internet fraca recebe uma versão 720p automaticamente
 - Escolha de microfone e saída de áudio, supressão de ruído
 - **App para Windows** na pasta [`desktop/`](desktop/)

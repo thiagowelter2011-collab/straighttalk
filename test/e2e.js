@@ -227,6 +227,8 @@ async function resetFixedAccounts() {
   for (const p of [ana, bia, caio]) { await p.click('#voice-channels .channel >> nth=0'); await p.waitForTimeout(700); }
   await ana.waitForFunction(() => document.querySelectorAll('#stage .tile.person').length === 3, null, { timeout: 15000 });
   console.log('voz: 3 pessoas no canal');
+  await ana.waitForTimeout(1500);
+  console.log('modo da chamada:', JSON.stringify(await Promise.all([ana, bia, caio].map((p) => p.evaluate(() => S.voice?.mode)))));
 
   await ana.click('#vb-share');
   await ana.click('#dlg-share button[value=ok]');
@@ -253,7 +255,7 @@ async function resetFixedAccounts() {
     speaking: document.querySelectorAll('#stage .tile.speaking').length,
     voiceList: [...document.querySelectorAll('.voice-user .name')].map((e) => e.textContent),
     live: document.querySelectorAll('.voice-user .live').length,
-    mode: S.media.mode,
+    mode: S.voice.mode,
     // Supressão de ruído por IA ligada no microfone
     denoise: S.voice.engine.room
       ? S.voice.engine.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone)?.track?.getProcessor()?.name || null

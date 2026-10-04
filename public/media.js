@@ -216,24 +216,24 @@
       this.mic?.getTracks().forEach((t) => pc.addTrack(t, this.mic));
       if (this.localScreen) this.addScreenTo(peer);
       if (this.localCamera) this.addCameraTo(peer);
+      // Quem começa a conversa é sempre o lado "impolite": evita os dois mandarem oferta ao mesmo tempo
+      // (essa colisão às vezes deixava a conexão parada). Sem microfone, ainda assim abre o canal de áudio para ouvir.
+      if (!peer.polite && !this.mic) pc.addTransceiver('audio', { direction: 'recvonly' });
 
-      pc.onnegotiationneeded = async () => {
-        try {
-          peer.makingOffer = true;
-          await pc.setLocalDescription();
-          this.send({ type: 'signal', to: id, data: { description: pc.localDescription } });
-        } catch (err) {
-          console.error(err);
-        } finally {
-          peer.makingOffer = false;
-        }
+      pc.onnegotiationneeded = () => {
+        if (peer.polite && !peer.gotOffer) return; // espera a primeira oferta do outro lado
+        this.offer(peer);
       };
       pc.onicecandidate = ({ candidate }) => {
         if (candidate) this.send({ type: 'signal', to: id, data: { candidate } });
       };
+      // Conexão direta que não conecta (rede fechada, sem TURN): avisa para a chamada passar ao servidor de mídia
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed') pc.restartIce();
+        if (pc.connectionState !== 'failed') return;
+        if (peer.restarted) this.cb.onP2PFailed?.(); else { peer.restarted = true; pc.restartIce(); }
       };
+      const slow = setTimeout(() => { if (this.peers.get(id) === peer && pc.connectionState !== 'connected') this.cb.onP2PFailed?.(); }, 10000);
+      peer.stops.push(() => clearTimeout(slow));
       pc.ontrack = ({ track, streams, receiver }) => {
         try { receiver.jitterBufferTarget = 0; } catch {}
         try { receiver.playoutDelayHint = 0; } catch {}
@@ -261,6 +261,7 @@
           if (!stream.getVideoTracks().length && peer.video.delete(stream.id)) this.classify(peer);
         };
       };
+      return peer;
     }
 
     removePeer(id) {
@@ -275,8 +276,21 @@
       this.cb.onSpeaking(id, false);
     }
 
+    async offer(peer) {
+      try {
+        peer.makingOffer = true;
+        await peer.pc.setLocalDescription();
+        this.send({ type: 'signal', to: peer.id, data: { description: peer.pc.localDescription } });
+      } catch (err) {
+        console.error(err);
+      } finally {
+        peer.makingOffer = false;
+      }
+    }
+
     async handleSignal(from, { description, candidate }) {
-      const peer = this.peers.get(from);
+      // O sinal pode chegar antes da lista de participantes: cria a conexão na hora (o servidor só repassa sinais do mesmo canal)
+      const peer = this.peers.get(from) || (from !== this.myConnId && this.addPeer(from));
       if (!peer) return;
       const pc = peer.pc;
       try {
@@ -288,6 +302,11 @@
           if (description.type === 'offer') {
             await pc.setLocalDescription();
             this.send({ type: 'signal', to: from, data: { description: pc.localDescription } });
+            // Primeira oferta recebida: se algo daqui (tela, câmera) ficou de fora, manda uma oferta agora
+            if (!peer.gotOffer) {
+              peer.gotOffer = true;
+              if (pc.getTransceivers().some((t) => t.sender.track && !t.mid)) this.offer(peer);
+            }
           }
         } else if (candidate) {
           try { await pc.addIceCandidate(candidate); } catch (err) { if (!peer.ignoreOffer) throw err; }
@@ -553,6 +572,8 @@
         resolution: { width: p.width, height: p.height, frameRate: p.fps },
       }, {
         screenShareEncoding: { maxBitrate: p.bitrate, maxFramerate: p.fps },
+        // H.264 costuma ter codificação pela placa de vídeo: menos CPU (e menos atraso) em 1080p60
+        videoCodec: 'h264',
         // Camada extra em 720p: quem tem internet fraca (ou vê a tela pequena) recebe essa, os outros recebem a qualidade cheia
         simulcast: true,
         screenShareSimulcastLayers: [new LK.VideoPreset(1280, 720, p.motion ? 1_500_000 : 1_000_000, p.motion ? 30 : 15)],

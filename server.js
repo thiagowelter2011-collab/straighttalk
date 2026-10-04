@@ -546,13 +546,34 @@ function createApp({
   }
 
   function broadcastVoice(serverId, channelId) {
-    toChannel(serverId, channelId, { type: 'voice', serverId, channelId, participants: voiceParticipants(channelId) });
+    const participants = voiceParticipants(channelId);
+    if (!participants.length) voiceModes.delete(channelId);
+    toChannel(serverId, channelId, { type: 'voice', serverId, channelId, participants, mode: voiceModes.get(channelId) || null });
   }
 
   function leaveVoice(conn) {
     if (!conn.voice) return;
     const { serverId, channelId } = conn.voice;
     conn.voice = null;
+    broadcastVoice(serverId, channelId);
+  }
+
+  // Modo de cada canal de voz: 'p2p' (direto, chamadas pequenas) ou 'livekit' (servidor de mídia)
+  const voiceModes = new Map(); // channelId -> modo
+  function voiceModeFor(channelId, joiningConn) {
+    if (!media.livekitEnabled()) return 'p2p';
+    const others = [...conns.values()].filter((c) => c !== joiningConn && c.voice?.channelId === channelId).length;
+    const current = others ? voiceModes.get(channelId) : null;
+    if (current === 'livekit') return 'livekit';
+    return others + 1 <= media.p2pMax() ? 'p2p' : 'livekit';
+  }
+
+  // Passa a chamada inteira para o LiveKit (cresceu demais ou a conexão direta falhou)
+  function upgradeVoice(serverId, channelId) {
+    voiceModes.set(channelId, 'livekit');
+    for (const c of conns.values()) {
+      if (c.voice?.channelId === channelId && c.voice.mode !== 'livekit') send(c, { type: 'voice-mode', channelId, mode: 'livekit' });
+    }
     broadcastVoice(serverId, channelId);
   }
 
@@ -584,14 +605,29 @@ function createApp({
           if (c.user.id === conn.user.id && c !== conn && c.voice) { leaveVoice(c); send(c, { type: 'voice-ended', reason: 'outra-aba' }); }
         }
         if (conn.voice) leaveVoice(conn);
+        const mode = voiceModeFor(ch.id, conn);
+        const asked = msg.mode === 'livekit' ? 'livekit' : 'p2p';
+        // Entrou com o modo errado (a chamada mudou enquanto conectava): pede para entrar de novo no modo certo
+        if (asked !== mode && !(asked === 'livekit' && media.livekitEnabled())) return send(conn, { type: 'voice-mode', channelId: ch.id, mode });
         conn.voice = {
-          serverId: ch.serverId, channelId: ch.id,
+          serverId: ch.serverId, channelId: ch.id, mode: asked,
           mediaId: String(msg.mediaId || conn.id).slice(0, 80),
           muted: !!msg.muted, deafened: !!msg.deafened, sharing: false, screenStream: null, camera: false, cameraStream: null,
         };
-        broadcastVoice(ch.serverId, ch.id);
+        if (asked === 'livekit' && mode === 'p2p') {
+          // Alguém entrou já pelo LiveKit (ex.: a conexão direta dele falhou): todos vão junto
+          upgradeVoice(ch.serverId, ch.id);
+        } else if (mode === 'livekit' && voiceModes.get(ch.id) !== 'livekit') {
+          upgradeVoice(ch.serverId, ch.id);
+        } else {
+          voiceModes.set(ch.id, mode);
+          broadcastVoice(ch.serverId, ch.id);
+        }
         break;
       }
+      case 'voice-p2p-failed':
+        if (conn.voice && conn.voice.mode === 'p2p' && media.livekitEnabled()) upgradeVoice(conn.voice.serverId, conn.voice.channelId);
+        break;
       case 'voice-leave':
         leaveVoice(conn);
         break;
