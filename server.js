@@ -266,11 +266,26 @@ function createApp({
     return { id: row.id, fromId: row.from_id, toId: row.to_id, userId: row.from_id, author: row.author, authorAvatar: row.author_avatar || null, text: row.text, file: filePayload(row), createdAt: row.created_at, ...extras(row) };
   }
 
-  // Dá para conversar com quem está em algum servidor com você (ou com quem você já conversou)
+  /* ---------------- Amigos ---------------- */
+
+  const pair = (x, y) => (x < y ? [x, y] : [y, x]);
+
+  async function friendship(x, y) {
+    return db.get('SELECT requester_id AS requesterId, accepted_at AS acceptedAt FROM friendships WHERE a_id = ? AND b_id = ?', ...pair(x, y));
+  }
+
+  async function friendIds(userId) {
+    const rows = await db.all(`SELECT CASE WHEN a_id = ? THEN b_id ELSE a_id END AS id FROM friendships
+      WHERE (a_id = ? OR b_id = ?) AND accepted_at IS NOT NULL`, userId, userId, userId);
+    return rows.map((r) => r.id);
+  }
+
+  // Dá para conversar com amigos, com quem está em algum servidor com você e com quem você já conversou
   async function requireDmPeer(peerId, user) {
     if (!Number.isInteger(peerId) || peerId === user.id) throw new HttpError(400, 'Conversa inválida.');
     const peer = await db.get('SELECT id, username, display_name AS displayName, personal_message AS personalMessage, avatar_key AS avatarKey FROM users WHERE id = ?', peerId);
     const allowed = peer && (
+      (await friendship(user.id, peerId))?.acceptedAt ||
       await db.get(`SELECT 1 FROM members a JOIN members b ON a.server_id = b.server_id WHERE a.user_id = ? AND b.user_id = ? LIMIT 1`, user.id, peerId) ||
       await db.get(`SELECT 1 FROM dm_messages WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?) LIMIT 1`, user.id, peerId, peerId, user.id));
     if (!allowed) throw new HttpError(404, 'Contato não encontrado.');
@@ -313,6 +328,7 @@ function createApp({
     for (const serverId of await serverIdsOf(userId)) {
       toServer(serverId, { type: 'presence', serverId, userId, online: status !== 'offline', status });
     }
+    for (const id of await friendIds(userId)) toUser(id, { type: 'presence', userId, online: status !== 'offline', status, friend: true });
   }
 
   function send(conn, msg) {
@@ -804,6 +820,61 @@ function createApp({
   });
 
   // Envio de imagem/arquivo: o corpo é o próprio arquivo; o nome vem no cabeçalho X-File-Name
+  /* ---------------- Amigos ---------------- */
+
+  route('GET', '/api/friends', async ({ user }) => {
+    const rows = await db.all(`SELECT f.requester_id AS requesterId, f.accepted_at AS acceptedAt, f.created_at AS createdAt,
+        u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage, u.avatar_key AS avatarKey
+      FROM friendships f JOIN users u ON u.id = CASE WHEN f.a_id = ? THEN f.b_id ELSE f.a_id END
+      WHERE f.a_id = ? OR f.b_id = ? ORDER BY u.display_name COLLATE NOCASE`, user.id, user.id, user.id);
+    const out = { friends: [], incoming: [], outgoing: [] };
+    for (const r of rows) {
+      const u = { id: r.id, username: r.username, displayName: r.displayName, personalMessage: r.personalMessage, avatarKey: r.avatarKey };
+      if (r.acceptedAt) out.friends.push({ ...u, status: visibleStatus(r.id) });
+      else (r.requesterId === user.id ? out.outgoing : out.incoming).push(u);
+    }
+    return out;
+  });
+
+  // Pedido de amizade pelo nome de usuário; se a outra pessoa já tinha pedido, vira amizade na hora
+  route('POST', '/api/friends', async ({ user, body }) => {
+    const username = String(body.username ?? '').trim().replace(/^@/, '').toLowerCase();
+    if (!username) throw new HttpError(400, 'Digite o nome de usuário.');
+    const other = await db.get('SELECT id, display_name AS displayName FROM users WHERE username = ?', username);
+    if (!other) throw new HttpError(404, 'Ninguém com esse nome de usuário.');
+    if (other.id === user.id) throw new HttpError(400, 'Esse é você.');
+    const f = await friendship(user.id, other.id);
+    if (f?.acceptedAt) throw new HttpError(409, `Vocês já são amigos.`);
+    if (f && f.requesterId === user.id) throw new HttpError(409, 'Pedido já enviado. Agora é só esperar.');
+    if (f) {
+      await db.run('UPDATE friendships SET accepted_at = ? WHERE a_id = ? AND b_id = ?', now(), ...pair(user.id, other.id));
+    } else {
+      const pending = await db.get('SELECT COUNT(*) AS n FROM friendships WHERE requester_id = ? AND accepted_at IS NULL', user.id);
+      if (Number(pending.n) >= 100) throw new HttpError(429, 'Muitos pedidos esperando resposta.');
+      await db.run('INSERT INTO friendships (a_id, b_id, requester_id, created_at) VALUES (?, ?, ?, ?)', ...pair(user.id, other.id), user.id, now());
+    }
+    for (const id of [user.id, other.id]) toUser(id, { type: 'friends', fromId: user.id, accepted: !!f });
+    return { accepted: !!f, userId: other.id };
+  });
+
+  route('POST', '/api/friends/:userId/accept', async ({ user, params }) => {
+    const otherId = Number(params.userId);
+    const f = Number.isInteger(otherId) && await friendship(user.id, otherId);
+    if (!f || f.requesterId === user.id) throw new HttpError(404, 'Pedido não encontrado.');
+    if (!f.acceptedAt) await db.run('UPDATE friendships SET accepted_at = ? WHERE a_id = ? AND b_id = ?', now(), ...pair(user.id, otherId));
+    for (const id of [user.id, otherId]) toUser(id, { type: 'friends', fromId: user.id, accepted: true });
+    return { ok: true };
+  });
+
+  // Desfaz a amizade, recusa um pedido recebido ou cancela um pedido enviado
+  route('DELETE', '/api/friends/:userId', async ({ user, params }) => {
+    const otherId = Number(params.userId);
+    if (!Number.isInteger(otherId)) throw new HttpError(400, 'Pedido inválido.');
+    await db.run('DELETE FROM friendships WHERE a_id = ? AND b_id = ?', ...pair(user.id, otherId));
+    for (const id of [user.id, otherId]) toUser(id, { type: 'friends' });
+    return { ok: true };
+  });
+
   route('POST', '/api/files', async ({ req, user }) => {
     const size = Number(req.headers['content-length']);
     if (!size) throw new HttpError(400, 'Arquivo vazio.');

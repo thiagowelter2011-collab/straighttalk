@@ -40,6 +40,7 @@ const S = {
   deafened: localGet('st-deafened') === '1',
   screens: new Map(),           // mediaId -> { stream, el }
   cameras: new Map(),           // mediaId -> { stream, el, local? }
+  friends: { friends: [], incoming: [], outgoing: [] },
   speaking: new Set(),          // mediaIds
   volumes: JSON.parse(localGet('st-volumes') || '{}'), // userId -> 0..1
   settings: JSON.parse(localGet('st-settings') || '{}'),
@@ -137,6 +138,7 @@ async function start() {
   updateControls();
   connectWs();
   loadDms();
+  loadFriends();
   await handlePendingInvite();
   const target = S.servers.find((s) => s.id === S.serverId) || S.servers[0];
   if (target) await selectServer(target.id); else renderAll();
@@ -277,6 +279,7 @@ async function onWs(msg) {
       }
       if (S.serverId) reloadDetail();
       loadDms();
+      loadFriends();
       break;
     }
     case 'message': {
@@ -340,8 +343,33 @@ async function onWs(msg) {
       if (msg.serverId === S.serverId) { renderChannels(); renderStage(); }
       break;
     }
+    case 'friends': {
+      const before = S.friends;
+      await loadFriends();
+      if (!msg.fromId || msg.fromId === S.user.id) break;
+      const find = (list) => list.find((u) => u.id === msg.fromId);
+      if (msg.accepted) {
+        const u = find(S.friends.friends);
+        if (u && !find(before.friends)) { Sounds.play('online'); toast(`${u.displayName} agora é seu amigo.`); }
+      } else {
+        const u = find(S.friends.incoming);
+        if (u && !find(before.incoming)) {
+          Sounds.play('message');
+          toast(`${u.displayName} (@${u.username}) quer ser seu amigo.`);
+          notify('Pedido de amizade', `${u.displayName} (@${u.username}) quer ser seu amigo.`, 'friend' + u.id);
+        }
+      }
+      break;
+    }
     case 'presence': {
       const peer = S.peers.get(msg.userId);
+      if (msg.friend) {
+        const f = S.friends.friends.find((x) => x.id === msg.userId);
+        const cameOnline = f && f.status === 'offline' && msg.online;
+        if (f) f.status = msg.status;
+        // Quem está no servidor aberto já ganha o aviso pela lista de membros
+        if (cameOnline && !S.detail?.members.some((m) => m.id === msg.userId)) { Sounds.play('online'); toast(`${f.displayName} acabou de entrar.`); }
+      }
       if (peer && peer.status !== msg.status) {
         peer.status = msg.status || (msg.online ? 'online' : 'offline');
         renderDmList();
@@ -856,7 +884,10 @@ function dmCard(userId) {
     linkify(pm, u.personalMessage, true);
     who.append(pm);
   }
-  return el('div', { className: 'dm-card' }, frame, who);
+  const card = el('div', { className: 'dm-card' }, frame, who);
+  const action = friendAction(userId, u);
+  if (action) card.append(action);
+  return card;
 }
 
 function rememberPeer(u) {
@@ -869,6 +900,115 @@ function peerStatus(userId) {
   const m = S.detail?.members.find((x) => x.id === userId);
   if (m) return m.online ? (m.status || 'online') : 'offline';
   return S.peers.get(userId)?.status || 'offline';
+}
+
+/* ================= Amigos ================= */
+
+const isFriend = (id) => S.friends.friends.some((f) => f.id === id);
+
+async function loadFriends() {
+  try {
+    S.friends = await api('GET', '/api/friends');
+  } catch { return; }
+  for (const f of S.friends.friends) rememberPeer(f);
+  for (const u of [...S.friends.incoming, ...S.friends.outgoing]) if (!S.peers.has(u.id)) rememberPeer(u);
+  renderDmList();
+  if (S.view === 'dm') renderMain();
+}
+
+async function addFriend(username) {
+  const r = await api('POST', '/api/friends', { username });
+  await loadFriends();
+  const u = S.friends.friends.find((f) => f.id === r.userId) || S.friends.outgoing.find((f) => f.id === r.userId);
+  toast(r.accepted ? `Vocês agora são amigos!` : `Pedido enviado para ${u?.displayName || username}.`);
+  return r;
+}
+
+function addFriendDialog() {
+  return formDialog({
+    title: 'Adicionar amigo',
+    text: 'Digite o nome de usuário da pessoa (o que ela usa para entrar). Quando ela aceitar, vocês podem conversar e ligar sem estar no mesmo servidor.',
+    fields: [{ name: 'username', label: 'Nome de usuário', placeholder: 'ex.: bia', maxlength: 33 }],
+    okText: 'Enviar pedido',
+    onSubmit: ({ username }) => addFriend(username),
+  });
+}
+
+async function answerFriend(userId, accept) {
+  try {
+    if (accept) await api('POST', `/api/friends/${userId}/accept`);
+    else await api('DELETE', `/api/friends/${userId}`);
+    await loadFriends();
+  } catch (err) { toast(err.message); }
+}
+
+async function removeFriend(u) {
+  const ok = await formDialog({ title: `Desfazer amizade com ${u.displayName}?`, text: 'Vocês continuam vendo as conversas antigas.', okText: 'Desfazer amizade', danger: true });
+  if (ok) answerFriend(u.id, false);
+}
+
+// Botão do cartão da conversa particular, conforme a amizade
+function friendAction(userId, u) {
+  if (isFriend(userId)) return null;
+  const btn = (text, iconName, cls, onclick) => {
+    const b = el('button', { className: 'btn small ' + cls, type: 'button' }, iconEl(iconName, 15), ' ' + text);
+    b.onclick = onclick;
+    return b;
+  };
+  if (S.friends.incoming.some((x) => x.id === userId)) return btn('Aceitar amizade', 'check', 'primary', () => answerFriend(userId, true));
+  if (S.friends.outgoing.some((x) => x.id === userId)) return el('span', { className: 'muted small-note', textContent: 'Pedido de amizade enviado' });
+  if (!u.username) return null;
+  return btn('Adicionar amigo', 'user-plus', 'primary', () => addFriend(u.username).catch((err) => toast(err.message)));
+}
+
+function renderFriends() {
+  const ul = $('#friend-list');
+  if (!ul) return;
+  ul.innerHTML = '';
+  const order = { online: 0, busy: 1, away: 2, offline: 3 };
+  const rowFor = (u, extraClass, title) => {
+    const av = el('div', { className: 'avatar' });
+    paintAvatar(av, u.displayName, u.avatarKey);
+    const frame = el('div', { className: 'frame' }, av);
+    return el('li', { className: 'channel dm ' + extraClass, title }, frame);
+  };
+  const action = (iconName, title, fn) => {
+    const b = el('button', { type: 'button', title }, iconEl(iconName, 15));
+    b.onclick = (e) => { e.stopPropagation(); fn(); };
+    return b;
+  };
+  for (const u of S.friends.incoming) {
+    const li = rowFor(u, 'friend-request', `@${u.username} quer ser seu amigo`);
+    li.querySelector('.frame').dataset.status = 'offline';
+    li.append(el('span', { className: 'ch-name' }, u.displayName, el('small', { textContent: ' quer ser seu amigo' })),
+      el('span', { className: 'ch-actions always' }, action('check', 'Aceitar', () => answerFriend(u.id, true)), action('x', 'Recusar', () => answerFriend(u.id, false))));
+    ul.append(li);
+  }
+  const friends = [...S.friends.friends].sort((a, b) => (order[peerStatus(a.id)] ?? 3) - (order[peerStatus(b.id)] ?? 3));
+  for (const f of friends) {
+    const u = S.peers.get(f.id) || f;
+    const st = peerStatus(f.id);
+    const c = S.dms.find((x) => x.user.id === f.id);
+    const li = rowFor(u, st === 'offline' ? 'offline' : '', `@${u.username}: clique para conversar`);
+    li.querySelector('.frame').dataset.status = st;
+    li.append(el('span', { className: 'ch-name', textContent: u.displayName }),
+      c?.unread ? el('span', { className: 'badge', textContent: c.unread > 99 ? '99+' : String(c.unread) }) : null,
+      el('span', { className: 'ch-actions' }, action('x', 'Desfazer amizade', () => removeFriend(u))));
+    if (S.view === 'dm' && S.dmUserId === f.id) li.classList.add('active');
+    if (c?.unread) li.classList.add('unread');
+    li.onclick = () => openDm(f.id);
+    ul.append(li);
+  }
+  for (const u of S.friends.outgoing) {
+    const li = rowFor(u, 'friend-pending', `Esperando @${u.username} aceitar`);
+    li.querySelector('.frame').dataset.status = 'offline';
+    li.append(el('span', { className: 'ch-name' }, u.displayName, el('small', { textContent: ' (pedido enviado)' })),
+      el('span', { className: 'ch-actions' }, action('x', 'Cancelar pedido', () => answerFriend(u.id, false))));
+    ul.append(li);
+  }
+  if (!ul.children.length) ul.append(el('li', { className: 'friends-empty muted', textContent: 'Adicione amigos pelo nome de usuário para conversar sem precisar de servidor.' }));
+  $('#friends-count').textContent = S.friends.incoming.length ? String(S.friends.incoming.length) : '';
+  $('#friends-count').classList.toggle('hidden', !S.friends.incoming.length);
 }
 
 async function loadDms() {
@@ -954,11 +1094,14 @@ document.addEventListener('visibilitychange', () => {
 
 function renderDmList() {
   updateBadge();
+  renderFriends();
   const ul = $('#dm-list');
   if (!ul) return;
   ul.innerHTML = '';
-  $('#dm-title').classList.toggle('hidden', !S.dms.length);
-  for (const c of S.dms) {
+  // Amigos já aparecem na lista de amigos; aqui ficam as outras conversas
+  const others = S.dms.filter((c) => !isFriend(c.user.id));
+  $('#dm-title').classList.toggle('hidden', !others.length);
+  for (const c of others) {
     const u = S.peers.get(c.user.id) || c.user;
     const av = el('div', { className: 'avatar' });
     paintAvatar(av, u.displayName, u.avatarKey);
@@ -1237,6 +1380,7 @@ function renderChannels() {
   const voiceUl = $('#voice-channels');
   textUl.innerHTML = '';
   voiceUl.innerHTML = '';
+  document.querySelectorAll('.server-only').forEach((n) => n.classList.toggle('hidden', !S.detail));
   if (!S.detail) return;
 
   for (const c of S.detail.channels.filter((c) => c.type === 'text')) {
@@ -1527,6 +1671,7 @@ $('#btn-deafen').onclick = toggleDeafen;
 $('#btn-share').onclick = toggleShare;
 $('#vb-share').onclick = toggleShare;
 $('#btn-cam').onclick = toggleCamera;
+$('#btn-add-friend').onclick = () => addFriendDialog();
 $('#vb-cam').onclick = toggleCamera;
 $('#btn-hangup').onclick = () => leaveVoice();
 $('#vb-hangup').onclick = () => leaveVoice();

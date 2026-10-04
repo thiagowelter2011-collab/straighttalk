@@ -373,6 +373,59 @@ test('editar, responder e reagir (canal e conversa particular)', async () => {
   sb.ws.close();
 });
 
+test('amigos por nome de usuário: pedido, aceitar, conversar sem servidor e presença', async () => {
+  const caio = (await call('POST', '/api/login', { username: 'caio', password: '123456' })).data.token;
+  const dani = (await call('POST', '/api/register', { username: 'dani', password: '123456', displayName: 'Dani' })).data.token;
+  const caioId = (await call('GET', '/api/me', null, caio)).data.user.id;
+  const daniId = (await call('GET', '/api/me', null, dani)).data.user.id;
+  assert.equal((await call('POST', `/api/dm/${daniId}/messages`, { text: 'oi' }, caio)).status, 404, 'ainda não são amigos');
+
+  assert.equal((await call('POST', '/api/friends', { username: 'ninguem' }, caio)).status, 404);
+  assert.equal((await call('POST', '/api/friends', { username: 'caio' }, caio)).status, 400, 'a si mesmo');
+  const sd = await socket(dani);
+  await sd.wait((m) => m.type === 'hello');
+  let r = await call('POST', '/api/friends', { username: '@Dani' }, caio);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.accepted, false);
+  await sd.wait((m) => m.type === 'friends' && m.fromId === caioId);
+  assert.equal((await call('POST', '/api/friends', { username: 'dani' }, caio)).status, 409, 'pedido repetido');
+  assert.deepEqual((await call('GET', '/api/friends', null, caio)).data.outgoing.map((u) => u.username), ['dani']);
+  r = await call('GET', '/api/friends', null, dani);
+  assert.deepEqual(r.data.incoming.map((u) => u.username), ['caio']);
+  assert.equal(r.data.friends.length, 0);
+  assert.equal((await call('POST', `/api/dm/${daniId}/messages`, { text: 'oi' }, caio)).status, 404, 'pedido sem resposta não libera conversa');
+  assert.equal((await call('POST', `/api/friends/${daniId}/accept`, null, caio)).status, 404, 'quem pediu não aceita');
+
+  assert.equal((await call('POST', `/api/friends/${caioId}/accept`, null, dani)).status, 200);
+  r = await call('GET', '/api/friends', null, caio);
+  assert.deepEqual(r.data.friends.map((u) => [u.username, u.status]), [['dani', 'online']]);
+  assert.equal(r.data.outgoing.length, 0);
+  assert.equal((await call('POST', `/api/dm/${daniId}/messages`, { text: 'agora sim' }, caio)).status, 200, 'amigos conversam sem servidor em comum');
+  await sd.wait((m) => m.type === 'dm' && m.message.text === 'agora sim');
+
+  // Presença chega para amigos mesmo sem servidor em comum
+  const sc = await socket(caio);
+  await sc.wait((m) => m.type === 'hello');
+  sc.ws.send(JSON.stringify({ type: 'status', status: 'busy' }));
+  const pres = await sd.wait((m) => m.type === 'presence' && m.userId === caioId && m.status === 'busy');
+  assert.equal(pres.friend, true);
+
+  assert.equal((await call('DELETE', `/api/friends/${caioId}`, null, dani)).status, 200);
+  assert.equal((await call('GET', '/api/friends', null, caio)).data.friends.length, 0);
+  // Quem já conversou continua podendo conversar (histórico), mas a presença para de chegar
+  sd.inbox.length = 0;
+  sc.ws.send(JSON.stringify({ type: 'status', status: 'away' }));
+  await new Promise((res) => setTimeout(res, 200));
+  assert.ok(!sd.inbox.some((m) => m.type === 'presence' && m.userId === caioId));
+
+  // Se os dois pedem, vira amizade na hora
+  await call('POST', '/api/friends', { username: 'dani' }, caio);
+  r = await call('POST', '/api/friends', { username: 'caio' }, dani);
+  assert.equal(r.data.accepted, true);
+  assert.equal((await call('GET', '/api/friends', null, dani)).data.friends.length, 1);
+  sc.ws.close(); sd.ws.close();
+});
+
 test('link para baixar o app do Windows', async () => {
   const res = await fetch(base + '/baixar', { redirect: 'manual' });
   assert.equal(res.status, 302);

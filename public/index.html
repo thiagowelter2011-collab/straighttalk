@@ -87,11 +87,15 @@
       </div>
 
       <div class="channels" id="channels">
+        <div class="section-title">Amigos <span id="friends-count" class="badge hidden"></span>
+          <button id="btn-add-friend" class="icon-btn small section-btn" type="button" title="Adicionar amigo pelo nome de usuário" data-icon="user-plus" data-icon-size="15"></button>
+        </div>
+        <ul id="friend-list" class="channel-list"></ul>
         <div class="section-title hidden" id="dm-title">Conversas particulares</div>
         <ul id="dm-list" class="channel-list"></ul>
-        <div class="section-title">Canais de texto</div>
+        <div class="section-title server-only">Canais de texto</div>
         <ul id="text-channels" class="channel-list"></ul>
-        <div class="section-title">Canais de voz</div>
+        <div class="section-title server-only">Canais de voz</div>
         <ul id="voice-channels" class="channel-list"></ul>
       </div>
 
@@ -147,7 +151,7 @@
       <section id="view-empty" class="view empty-view">
         <div>
           <h2>Bem-vindo ao StraightTalk!</h2>
-          <p class="muted">Crie um servidor com o <b>+</b> ou entre num com um convite <b>🔗</b>.</p>
+          <p class="muted">Crie um servidor com o <b>+</b>, entre num com um convite <b>🔗</b> ou adicione amigos pelo nome de usuário na lista ao lado.</p>
         </div>
       </section>
 

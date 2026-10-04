@@ -93,6 +93,20 @@ const tag = Date.now().toString(36);
   await bia.click('#text-channels .channel >> nth=0');
   console.log('conversa particular ok');
 
+  // Amigos: Bia pede amizade pelo nome de usuário, Ana aceita
+  await bia.click('#btn-add-friend');
+  await bia.fill('#dlg-fields input', `ana${tag}`);
+  await bia.click('#dlg-ok');
+  await bia.waitForSelector('#friend-list .friend-pending >> text=Ana');
+  await ana.waitForSelector('#friends-count >> text=1');
+  await ana.click('#friend-list .friend-request button[title=Aceitar]');
+  await ana.waitForSelector('#friend-list .channel.dm >> text=Bia');
+  await bia.waitForSelector('#friend-list .channel.dm:not(.friend-pending) >> text=Ana');
+  if (await bia.isVisible('#dm-list .channel.dm >> text=Ana')) throw new Error('amiga aparece duas vezes');
+  const st = await bia.getAttribute('#friend-list .channel.dm:has-text("Ana") .frame', 'data-status');
+  if (st !== 'online') throw new Error('status da amiga: ' + st);
+  console.log('amigos ok');
+
   // Reagir, responder e editar
   const anaMsg = bia.locator('.msg', { hasText: 'oi bia, bem-vinda' });
   await anaMsg.hover();

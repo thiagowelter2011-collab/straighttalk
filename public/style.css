@@ -282,6 +282,16 @@ select { cursor: pointer; }
 .channel:hover .ch-actions { display: flex; }
 .channel .ch-actions button { border: 0; background: none; padding: 3px; border-radius: 6px; color: var(--text-3); display: grid; }
 .channel .ch-actions button:hover { color: var(--text); background: var(--hover); }
+.channel .ch-actions.always { display: flex; }
+.section-title .badge { margin-left: 6px; }
+.section-title .section-btn { margin-left: auto; margin-right: -8px; color: var(--text-3); }
+.section-title .section-btn:hover { color: var(--accent); }
+.channel.dm.offline .ch-name { color: var(--text-3); }
+.channel .ch-name small { font-weight: 400; color: var(--text-3); font-size: 12px; }
+.friend-request { background: var(--accent-soft); }
+.friend-request .ch-actions button:first-child { color: var(--online); }
+.friend-pending { cursor: default; }
+.friends-empty { list-style: none; font-size: 12.5px; padding: 2px 10px 6px; line-height: 1.45; }
 
 .voice-users { list-style: none; margin: 0 0 6px; padding: 0 0 0 28px; }
 .voice-user { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 8px; }
@@ -414,6 +424,8 @@ select { cursor: pointer; }
 .dm-card .frame > .avatar { box-shadow: 0 0 0 3px var(--surface-2); }
 .dm-card .who { min-width: 0; display: grid; gap: 3px; }
 .dm-card .name { font-size: 19px; font-weight: 800; letter-spacing: -.3px; }
+.dm-card > .btn, .dm-card > .small-note { margin-left: auto; flex-shrink: 0; }
+.small-note { font-size: 13px; }
 .dm-card .pm { color: var(--text-2); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Caixa de mensagem: ferramentas em cima, texto e botão de enviar */
