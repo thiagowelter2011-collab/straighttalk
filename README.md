@@ -6,6 +6,7 @@ Chat de texto, voz e compartilhamento de tela ao mesmo tempo, com cara de mensag
 - **Conversa particular:** clique num contato para abrir um chat só entre vocês dois, com aviso de mensagem nova, "digitando…" e chamar atenção só para aquela pessoa
 - **Imagens e arquivos:** botão 📎, colar (Ctrl+V) ou arrastar para o chat; imagens, vídeos e áudios aparecem na conversa (até 8 MB, guardados no banco)
 - **Avisos do Windows:** notificação quando chega mensagem com a janela minimizada (clique abre a conversa), ícone piscando e número de novidades na barra de tarefas. O app instalado se atualiza sozinho pelas Releases do GitHub
+- **Foto de perfil:** clique no seu quadrinho para escolher uma imagem; ela aparece nos contatos, nas conversas particulares e na voz
 
 ![Conversa](docs/msn-chat.png)
 

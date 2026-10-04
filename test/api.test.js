@@ -311,6 +311,26 @@ test('imagens e arquivos no chat e na conversa particular', async () => {
   sb.ws.close();
 });
 
+test('foto de perfil', async () => {
+  const up = async (buf, type, token) => (await fetch(base + '/api/files', { method: 'POST', body: buf, headers: { Authorization: `Bearer ${token}`, 'Content-Type': type, 'X-File-Name': 'foto.jpg' } })).json();
+  const f1 = await up(Buffer.from('jpeg-1'), 'image/jpeg', bia);
+  assert.equal((await call('PATCH', '/api/me', { avatarKey: f1.key }, bia)).status, 200);
+  let r = await call('GET', `/api/servers/${serverId}`, null, ana);
+  assert.equal(r.data.members.find((m) => m.displayName === 'Bia').avatarKey, f1.key);
+  assert.equal((await call('GET', '/api/me', null, bia)).data.user.avatarKey, f1.key);
+  assert.equal((await call('POST', `/api/channels/${textId}/messages`, { fileKey: f1.key }, bia)).status, 400, 'foto não vira anexo');
+  const txt = await up(Buffer.from('oi'), 'text/plain', bia);
+  assert.equal((await call('PATCH', '/api/me', { avatarKey: txt.key }, bia)).status, 400, 'só imagem');
+  const alheia = await up(Buffer.from('x'), 'image/png', ana);
+  assert.equal((await call('PATCH', '/api/me', { avatarKey: alheia.key }, bia)).status, 400, 'imagem de outra pessoa');
+  const f2 = await up(Buffer.from('jpeg-2'), 'image/jpeg', bia);
+  await call('PATCH', '/api/me', { avatarKey: f2.key }, bia);
+  assert.equal((await fetch(`${base}/files/${f1.key}`)).status, 404, 'foto antiga apagada');
+  await call('PATCH', '/api/me', { avatarKey: null }, bia);
+  assert.equal((await call('GET', '/api/me', null, bia)).data.user.avatarKey, null);
+  assert.equal((await fetch(`${base}/files/${f2.key}`)).status, 404);
+});
+
 test('link para baixar o app do Windows', async () => {
   const res = await fetch(base + '/baixar', { redirect: 'manual' });
   assert.equal(res.status, 302);

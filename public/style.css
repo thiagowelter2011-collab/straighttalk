@@ -411,3 +411,16 @@ input:focus, select:focus, textarea:focus { border-color: #3c8ee0; box-shadow: 0
   .stage { grid-template-columns: 1fr; }
   .emoticons { grid-template-columns: repeat(6, 34px); }
 }
+
+/* Foto de perfil */
+.avatar.photo { text-shadow: none; }
+#me-frame { cursor: pointer; }
+#me-frame:hover { filter: brightness(1.06); }
+.avatar-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.dm-card { display: flex; align-items: center; gap: 12px; margin: 6px 14px 4px; padding: 10px 12px; border: 1px solid #cfe2f6; border-radius: 6px;
+  background: linear-gradient(#ffffff, #eef5fd); }
+.dm-card .frame { padding: 4px; border-radius: 10px; }
+.dm-card .avatar { width: 64px; height: 64px; font-size: 26px; border-radius: 6px; }
+.dm-card .who { min-width: 0; display: grid; gap: 2px; }
+.dm-card .name { font-size: 16px; font-weight: 700; color: var(--text-strong); }
+.dm-card .pm { color: #7a8796; font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

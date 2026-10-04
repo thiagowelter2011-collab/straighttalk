@@ -66,7 +66,7 @@ function createApp({
 
   async function userFromToken(token) {
     if (!token) return null;
-    return (await db.get(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage
+    return (await db.get(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage, u.avatar_key AS avatarKey
               FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, String(token))) || null;
   }
 
@@ -117,7 +117,7 @@ function createApp({
   async function serverDetail(serverId, viewerId) {
     const s = await serverRow(serverId);
     const channels = await db.all('SELECT id, name, type, position FROM channels WHERE server_id = ? ORDER BY type DESC, position, id', serverId);
-    const members = (await db.all(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage
+    const members = (await db.all(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage, u.avatar_key AS avatarKey
                        FROM members m JOIN users u ON u.id = m.user_id
                        WHERE m.server_id = ? ORDER BY u.display_name COLLATE NOCASE`, serverId))
       .map((m) => ({ ...m, status: visibleStatus(m.id), online: visibleStatus(m.id) !== 'offline' }));
@@ -163,7 +163,7 @@ function createApp({
     if (!key) return null;
     const f = await db.get('SELECT id, key, name, mime, size FROM files WHERE key = ? AND user_id = ?', String(key), user.id);
     if (!f) throw new HttpError(400, 'Arquivo não encontrado. Envie de novo.');
-    if (await db.get('SELECT 1 FROM messages WHERE file_id = ? UNION ALL SELECT 1 FROM dm_messages WHERE file_id = ? LIMIT 1', f.id, f.id)) {
+    if (await db.get('SELECT 1 FROM messages WHERE file_id = ? UNION ALL SELECT 1 FROM dm_messages WHERE file_id = ? UNION ALL SELECT 1 FROM users WHERE avatar_key = ? LIMIT 1', f.id, f.id, f.key)) {
       throw new HttpError(400, 'Esse arquivo já foi enviado.');
     }
     return f;
@@ -185,7 +185,7 @@ function createApp({
   // Dá para conversar com quem está em algum servidor com você (ou com quem você já conversou)
   async function requireDmPeer(peerId, user) {
     if (!Number.isInteger(peerId) || peerId === user.id) throw new HttpError(400, 'Conversa inválida.');
-    const peer = await db.get('SELECT id, username, display_name AS displayName, personal_message AS personalMessage FROM users WHERE id = ?', peerId);
+    const peer = await db.get('SELECT id, username, display_name AS displayName, personal_message AS personalMessage, avatar_key AS avatarKey FROM users WHERE id = ?', peerId);
     const allowed = peer && (
       await db.get(`SELECT 1 FROM members a JOIN members b ON a.server_id = b.server_id WHERE a.user_id = ? AND b.user_id = ? LIMIT 1`, user.id, peerId) ||
       await db.get(`SELECT 1 FROM dm_messages WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?) LIMIT 1`, user.id, peerId, peerId, user.id));
@@ -264,6 +264,7 @@ function createApp({
       connId: c.id,
       userId: c.user.id,
       name: c.user.displayName,
+      avatarKey: c.user.avatarKey || null,
       mediaId: c.voice.mediaId,
       muted: c.voice.muted,
       deafened: c.voice.deafened,
@@ -453,6 +454,21 @@ function createApp({
       if (pm.length > 120) throw new HttpError(400, 'A mensagem pessoal pode ter no máximo 120 caracteres.');
       await db.run('UPDATE users SET personal_message = ? WHERE id = ?', pm, user.id);
     }
+    if ('avatarKey' in body) {
+      // Foto de perfil: imagem já enviada por /api/files (o app reduz para 160x160 antes)
+      let key = null;
+      if (body.avatarKey) {
+        const f = await db.get('SELECT id, key, mime, size FROM files WHERE key = ? AND user_id = ?', String(body.avatarKey), user.id);
+        if (!f || !/^image\/(png|jpeg|gif|webp)$/.test(f.mime)) throw new HttpError(400, 'Escolha uma imagem (PNG, JPG, GIF ou WebP).');
+        if (f.size > 2 * 1024 * 1024) throw new HttpError(400, 'A foto pode ter no máximo 2 MB.');
+        key = f.key;
+      }
+      const old = (await db.get('SELECT avatar_key AS k FROM users WHERE id = ?', user.id))?.k;
+      await db.run('UPDATE users SET avatar_key = ? WHERE id = ?', key, user.id);
+      if (old && old !== key) await deleteFiles([(await db.get('SELECT id FROM files WHERE key = ?', old))?.id]);
+      for (const c of conns.values()) if (c.user.id === user.id) c.user.avatarKey = key;
+      for (const c of conns.values()) if (c.user.id === user.id && c.voice) broadcastVoice(c.voice.serverId, c.voice.channelId);
+    }
     for (const sid of await serverIdsOf(user.id)) toServer(sid, { type: 'server-update', serverId: sid });
     return { ok: true };
   });
@@ -591,7 +607,7 @@ function createApp({
 
   // Lista de conversas privadas, da mais recente para a mais antiga
   route('GET', '/api/dm', async ({ user }) => {
-    const rows = await db.all(`SELECT c.other, c.lastAt, c.unread, u.username, u.display_name AS displayName, u.personal_message AS personalMessage
+    const rows = await db.all(`SELECT c.other, c.lastAt, c.unread, u.username, u.display_name AS displayName, u.personal_message AS personalMessage, u.avatar_key AS avatarKey
       FROM (SELECT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other,
                    MAX(created_at) AS lastAt,
                    SUM(CASE WHEN to_id = ? AND read_at IS NULL THEN 1 ELSE 0 END) AS unread
@@ -599,7 +615,7 @@ function createApp({
       JOIN users u ON u.id = c.other ORDER BY c.lastAt DESC LIMIT 50`, user.id, user.id, user.id, user.id);
     return {
       conversations: rows.map((r) => ({
-        user: { id: r.other, username: r.username, displayName: r.displayName, personalMessage: r.personalMessage, status: visibleStatus(r.other) },
+        user: { id: r.other, username: r.username, displayName: r.displayName, personalMessage: r.personalMessage, avatarKey: r.avatarKey, status: visibleStatus(r.other) },
         lastAt: r.lastAt, unread: Number(r.unread) || 0,
       })),
     };
@@ -624,7 +640,7 @@ function createApp({
     const text = cleanText(body, file);
     const { lastInsertRowid } = await db.run('INSERT INTO dm_messages (from_id, to_id, text, file_id, created_at) VALUES (?, ?, ?, ?, ?)', user.id, peer.id, text, file?.id ?? null, now());
     const message = dmPayload(await db.get(`${DM_SELECT} WHERE m.id = ?`, lastInsertRowid));
-    const out = { type: 'dm', message, from: { id: user.id, username: user.username, displayName: user.displayName, personalMessage: user.personalMessage, status: visibleStatus(user.id) } };
+    const out = { type: 'dm', message, from: { id: user.id, username: user.username, displayName: user.displayName, personalMessage: user.personalMessage, avatarKey: user.avatarKey, status: visibleStatus(user.id) } };
     toUser(peer.id, out);
     toUser(user.id, out);
     return message;

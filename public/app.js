@@ -472,6 +472,7 @@ function renderMessages(scroll = true) {
     btn.onclick = () => loadOlder(conv).catch((e) => toast(e.message));
     box.append(btn);
   } else {
+    if (conv.dm) box.append(dmCard(conv.userId));
     box.append(el('div', { className: 'msg system first', textContent: conv.dm
       ? `Esta é a sua conversa particular com ${conv.name}. Só vocês dois veem estas mensagens.`
       : `Este é o começo do canal ${conv.name}.` }));
@@ -661,6 +662,22 @@ function renderTyping() {
 
 /* ================= Conversas privadas ================= */
 
+// Topo da conversa particular: foto grande no quadrinho, como no MSN
+function dmCard(userId) {
+  const u = S.peers.get(userId) || {};
+  const av = el('div', { className: 'avatar' });
+  paintAvatar(av, u.displayName, u.avatarKey);
+  const frame = el('div', { className: 'frame' }, av);
+  frame.dataset.status = peerStatus(userId);
+  const who = el('div', { className: 'who' }, el('div', { className: 'name', textContent: u.displayName || 'Contato' }));
+  if (u.personalMessage) {
+    const pm = el('div', { className: 'pm' });
+    linkify(pm, u.personalMessage, true);
+    who.append(pm);
+  }
+  return el('div', { className: 'dm-card' }, frame, who);
+}
+
 function rememberPeer(u) {
   if (!u || u.id === S.user?.id) return;
   const old = S.peers.get(u.id) || {};
@@ -685,7 +702,7 @@ async function loadDms() {
 
 async function openDm(userId) {
   const member = S.detail?.members.find((m) => m.id === userId);
-  if (member) rememberPeer({ id: member.id, username: member.username, displayName: member.displayName, personalMessage: member.personalMessage, status: peerStatus(member.id) });
+  if (member) rememberPeer({ id: member.id, username: member.username, displayName: member.displayName, personalMessage: member.personalMessage, avatarKey: member.avatarKey, status: peerStatus(member.id) });
   S.view = 'dm';
   S.dmUserId = userId;
   closeDrawer();
@@ -763,7 +780,7 @@ function renderDmList() {
   for (const c of S.dms) {
     const u = S.peers.get(c.user.id) || c.user;
     const av = el('div', { className: 'avatar' });
-    paintAvatar(av, u.displayName);
+    paintAvatar(av, u.displayName, u.avatarKey);
     const frame = el('div', { className: 'frame' }, av);
     frame.dataset.status = peerStatus(u.id);
     const li = el('li', { className: 'channel dm', title: 'Conversa particular com ' + u.displayName }, frame,
@@ -957,7 +974,8 @@ function renderMe() {
   $('#me-frame').dataset.status = S.status === 'invisible' ? 'offline' : S.status;
   $('#me-status').value = S.status;
   if (document.activeElement !== $('#me-pm')) $('#me-pm').value = S.user.personalMessage || '';
-  paintAvatar($('#me-avatar'), S.user.displayName);
+  paintAvatar($('#me-avatar'), S.user.displayName, S.user.avatarKey);
+  $('#set-avatar-remove')?.classList.toggle('hidden', !S.user.avatarKey);
   $('#me-avatar').dataset.media = S.voice?.mediaId || '';
 }
 
@@ -1050,7 +1068,7 @@ function ownerActions(c) {
 
 function voiceUserNode(p) {
   const av = el('div', { className: 'avatar' });
-  paintAvatar(av, p.name);
+  paintAvatar(av, p.name, p.avatarKey);
   av.dataset.media = p.mediaId;
   if (S.speaking.has(p.mediaId)) av.classList.add('speaking');
   const icons = el('span', { className: 'icons' });
@@ -1173,7 +1191,7 @@ function personTile(p) {
   }
   tile.dataset.media = p.mediaId;
   tile.classList.toggle('speaking', S.speaking.has(p.mediaId));
-  paintAvatar(tile.querySelector('.avatar'), p.name);
+  paintAvatar(tile.querySelector('.avatar'), p.name, p.avatarKey);
   tile.querySelector('.label').textContent = `${p.deafened ? '🔕 ' : p.muted ? '🔇 ' : ''}${p.name}${p.userId === S.user.id ? ' (você)' : ''}`;
   return tile;
 }
@@ -1198,7 +1216,7 @@ function renderMembers() {
     for (const m of list) {
       const status = online ? (m.status || 'online') : 'offline';
       const av = el('div', { className: 'avatar' });
-      paintAvatar(av, m.displayName);
+      paintAvatar(av, m.displayName, m.avatarKey);
       const frame = el('div', { className: 'frame' }, av);
       frame.dataset.status = status;
       const who = el('div', { className: 'who' }, el('span', { className: 'name', textContent: m.displayName + (online && status !== 'online' ? ` (${STATUS_LABEL[status]})` : '') }));
@@ -1630,6 +1648,63 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { clearInterval(titleTimer); titleTimer = null; document.title = 'StraightTalk'; }
 });
 
+/* ================= Foto de perfil ================= */
+
+// Recorta o centro da imagem e reduz para 160x160 antes de enviar
+function shrinkImage(file, size = 160) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.createElement('canvas');
+      c.width = c.height = size;
+      const g = c.getContext('2d');
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, size, size);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error('Não consegui ler a imagem.'))), 'image/jpeg', 0.9);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Esse arquivo não é uma imagem.')); };
+    img.src = url;
+  });
+}
+
+async function setAvatar(file) {
+  try {
+    const blob = await shrinkImage(file);
+    const res = await fetch('/api/files', {
+      method: 'POST', body: blob,
+      headers: { Authorization: `Bearer ${S.token}`, 'Content-Type': 'image/jpeg', 'X-File-Name': 'foto.jpg' },
+    });
+    const up = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(up.error || `Erro ${res.status}`);
+    await api('PATCH', '/api/me', { avatarKey: up.key });
+    S.user.avatarKey = up.key;
+    renderMe();
+    toast('Foto de perfil atualizada.');
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+$('#me-frame').title = 'Clique para trocar sua foto de perfil';
+$('#me-frame').onclick = () => $('#avatar-input').click();
+$('#avatar-input').onchange = () => {
+  const f = $('#avatar-input').files[0];
+  $('#avatar-input').value = '';
+  if (f) setAvatar(f);
+};
+$('#set-avatar-pick').onclick = () => $('#avatar-input').click();
+$('#set-avatar-remove').onclick = async () => {
+  try {
+    await api('PATCH', '/api/me', { avatarKey: null });
+    S.user.avatarKey = null;
+    renderMe();
+    toast('Foto removida.');
+  } catch (err) { toast(err.message); }
+};
+
 /* ================= Avisos na área de trabalho ================= */
 
 const desktop = window.straighttalkDesktop;
@@ -1691,7 +1766,14 @@ function hue(name) {
   return h;
 }
 function nameColor(name) { return `hsl(${hue(name)} 60% 65%)`; }
-function paintAvatar(node, name) {
+function paintAvatar(node, name, avatarKey) {
+  if (avatarKey) {
+    node.textContent = '';
+    node.style.background = `#fff center / cover no-repeat url("/files/${avatarKey}/foto")`;
+    node.classList.add('photo');
+    return;
+  }
+  node.classList.remove('photo');
   node.textContent = (String(name || '?').trim().charAt(0) || '?').toUpperCase();
   node.style.background = `hsl(${hue(name)} 45% 42%)`;
 }

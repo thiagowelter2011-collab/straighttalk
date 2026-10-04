@@ -103,6 +103,7 @@
       <footer class="user-panel">
         <div class="me">
           <div class="frame" id="me-frame"><div id="me-avatar" class="avatar"></div></div>
+          <input type="file" id="avatar-input" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
           <div class="me-text">
             <div class="me-line">
               <span id="me-name" class="me-name"></span>
@@ -214,6 +215,10 @@
         <select id="set-speaker"></select>
       </label>
       <label class="radio"><input type="checkbox" id="set-noise"> Supressão de ruído</label>
+      <div class="avatar-row">Foto de perfil:
+        <button type="button" class="btn small" id="set-avatar-pick">🖼️ Escolher foto</button>
+        <button type="button" class="btn small danger hidden" id="set-avatar-remove">Remover</button>
+      </div>
       <label class="radio"><input type="checkbox" id="set-notify"> Avisos na área de trabalho quando chegar mensagem com a janela minimizada</label>
       <label class="radio"><input type="checkbox" id="set-sounds"> Sons de mensagem, contato online e chamar atenção</label>
       <p class="muted small" id="set-media"></p>

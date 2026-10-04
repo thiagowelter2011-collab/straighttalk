@@ -107,6 +107,16 @@ const tag = Date.now().toString(36);
   await bia.screenshot({ path: `${OUT}/v2-arquivos.png` });
   console.log('imagens e arquivos ok');
 
+  // Foto de perfil no quadrinho
+  await bia.setInputFiles('#avatar-input', { name: 'eu.png', mimeType: 'image/png', buffer: shot });
+  await bia.waitForSelector('#me-avatar.photo');
+  await ana.waitForSelector('.member .avatar.photo', { timeout: 10000 });
+  await ana.click('.member.clickable >> text=Bia');
+  await ana.waitForSelector('.dm-card .avatar.photo');
+  await ana.screenshot({ path: `${OUT}/v2-foto.png` });
+  await ana.click('#text-channels .channel >> nth=0');
+  console.log('foto de perfil ok');
+
   const caio = await person('Caio');
   await register(caio, `caio${tag}`, 'Caio', invite);
   await caio.waitForSelector('#dlg-form[open]');
