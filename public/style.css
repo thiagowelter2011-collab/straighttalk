@@ -364,9 +364,40 @@ select { cursor: pointer; }
 .att-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .att-size { color: var(--text-3); font-size: 12px; flex: none; }
 .text-view.dropping { outline: 2px dashed var(--accent); outline-offset: -10px; background: var(--accent-soft); border-radius: var(--radius); }
-.msg .del { position: absolute; right: 14px; top: 2px; display: none; border: 1px solid var(--border); background: var(--surface); color: var(--text-3); border-radius: 8px; padding: 4px; box-shadow: var(--shadow-sm); }
-.msg .del:hover { color: var(--danger); border-color: var(--danger); }
-.msg:hover .del { display: grid; }
+/* Ações ao passar o mouse: reagir, responder, editar, apagar */
+.msg-actions { position: absolute; right: 16px; top: -14px; display: none; gap: 1px; padding: 3px; z-index: 2;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 11px; box-shadow: var(--shadow); }
+.msg:hover .msg-actions, .msg.show-actions .msg-actions, .msg-actions:has(.react-picker) { display: flex; }
+.msg-actions > button { border: 0; background: transparent; color: var(--text-2); border-radius: 8px; width: 30px; height: 28px; display: grid; place-items: center; }
+.msg-actions > button:hover { background: var(--accent-soft); color: var(--accent); }
+.msg-actions > button.danger:hover { background: var(--danger-soft); color: var(--danger); }
+.react-picker { position: absolute; right: 0; top: calc(100% + 6px); display: flex; gap: 2px; padding: 6px; z-index: 5;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow-lg); animation: rise .15s var(--ease); }
+.react-picker button { border: 0; background: transparent; font-size: 20px; width: 36px; height: 36px; border-radius: 10px; transition: transform .1s, background .1s; }
+.react-picker button:hover { background: var(--accent-soft); transform: scale(1.18); }
+.reactions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.reaction { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 20px; border: 1px solid var(--border);
+  background: var(--surface-2); font-size: 12.5px; font-weight: 600; color: var(--text-2); transition: background .12s, border-color .12s, transform .1s; }
+.reaction:hover { border-color: var(--border-strong); }
+.reaction:active { transform: scale(.94); }
+.reaction.mine { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.reaction .r-emoji { font-size: 15px; }
+.quote { display: flex; align-items: center; gap: 6px; max-width: 100%; border: 0; background: none; padding: 0 0 2px; margin-left: -2px;
+  color: var(--text-3); font-size: 12.5px; text-align: left; }
+.quote b { color: var(--text-2); flex: none; }
+.quote .q-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.quote:hover b, .quote:hover .q-text { color: var(--accent); }
+.edited { font-size: 11.5px; color: var(--text-3); }
+.msg.flash { animation: flash 1.4s var(--ease); }
+@keyframes flash { 0%, 40% { background: var(--accent-soft-2); } 100% { background: transparent; } }
+.msg.editing { background: var(--accent-soft); }
+.edit-box textarea { min-height: 40px; resize: none; background: var(--surface); }
+.edit-hint { font-size: 11.5px; color: var(--text-3); margin-top: 3px; }
+.reply-bar { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; padding: 6px 4px 6px 10px; margin-bottom: 4px;
+  border-radius: 11px; background: var(--accent-soft); color: var(--text-2); font-size: 12.5px; min-width: 0; }
+.reply-bar .ic:first-child { color: var(--accent); }
+.reply-bar .q-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; color: var(--text-3); }
+.reply-bar span:not(.q-text) { flex: none; }
 .msg.system { display: block; color: var(--text-3); font-size: 12.5px; padding-left: 20px; margin-top: 10px; }
 .msg.system.nudge-line { color: var(--nudge); font-weight: 700; }
 .msg.system.nudge-line::before { content: "📳 "; }

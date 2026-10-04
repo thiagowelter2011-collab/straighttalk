@@ -23,6 +23,7 @@ const S = {
   detail: null,                 // { server, channels, members, voice }
   view: 'empty',                // empty | text | voice | dm
   dmUserId: null,               // conversa privada aberta
+  reply: null,                  // { key, id, author, text } mensagem sendo respondida
   dms: [],                      // [{ user, lastAt, unread }] conversas privadas, mais recente primeiro
   peers: new Map(),             // userId -> { id, displayName, personalMessage, status }
   textChannel: {},              // serverId -> channelId
@@ -301,12 +302,16 @@ async function onWs(msg) {
       }
       break;
     }
-    case 'message-deleted': {
-      const list = S.messages.get(msg.channelId);
-      if (list) S.messages.set(msg.channelId, list.filter((x) => x.id !== msg.messageId));
-      if (S.view === 'text' && S.textChannel[S.serverId] === msg.channelId) renderMessages();
+    case 'message-deleted':
+      removeMessage(msg.channelId, msg.messageId);
       break;
-    }
+    case 'message-updated':
+    case 'dm-updated':
+      updateMessage(msg.message);
+      break;
+    case 'dm-deleted':
+      removeMessage('dm:' + (msg.fromId === S.user.id ? msg.toId : msg.fromId), msg.messageId);
+      break;
     case 'dm':
       onDm(msg);
       break;
@@ -494,35 +499,191 @@ function appendMessage(m, key) {
   if (atBottom || m.userId === S.user.id) box.scrollTop = box.scrollHeight;
 }
 
+const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👀'];
+
+function msgUrl(m) { return m.channelId ? `/api/messages/${m.id}` : `/api/dm/messages/${m.id}`; }
+function msgKey(m) { return m.channelId ? m.channelId : 'dm:' + (m.fromId === S.user.id ? m.toId : m.fromId); }
+function userName(id) {
+  if (id === S.user.id) return 'Você';
+  return S.detail?.members.find((x) => x.id === id)?.displayName || S.peers.get(id)?.displayName || 'Alguém';
+}
+
 function messageNode(m, prev) {
-  const first = !prev || prev.userId !== m.userId || m.createdAt - prev.createdAt > 5 * 60_000;
+  const first = !prev || prev.userId !== m.userId || m.createdAt - prev.createdAt > 5 * 60_000 || !!m.replyTo;
   const node = el('div', { className: 'msg' + (first ? ' first' : '') });
   node.dataset.id = m.id;
   const avatar = el('div', { className: 'avatar' });
   paintAvatar(avatar, m.author, m.authorAvatar);
   const body = el('div', { className: 'body' });
+  if (m.replyTo) {
+    const q = el('button', { type: 'button', className: 'quote' }, iconEl('reply', 13));
+    if (m.replyTo.deleted) q.append(el('span', { className: 'q-text', textContent: 'Mensagem apagada' }));
+    else {
+      q.append(el('b', { textContent: m.replyTo.author }));
+      const qt = el('span', { className: 'q-text' });
+      linkify(qt, m.replyTo.text, true);
+      q.append(qt);
+      q.onclick = () => jumpTo(m.replyTo.id);
+    }
+    body.append(q);
+  }
   if (first) {
     const author = el('span', { className: 'author', textContent: m.author });
-    author.style.color = nameColor(m.author);
     body.append(el('div', { className: 'head' }, author, el('span', { className: 'time', textContent: fmtTime(m.createdAt) })));
   }
-  if (m.text) {
+  if (m.text || m.editedAt) {
     const text = el('div', { className: 'text' });
     linkify(text, m.text, true);
+    if (m.editedAt) text.append(el('span', { className: 'edited', textContent: ' (editado)', title: 'Editado ' + fmtTime(m.editedAt) }));
     if (!first) text.title = fmtTime(m.createdAt);
     body.append(text);
   }
   if (m.file) body.append(fileNode(m.file));
-  node.append(avatar, body);
-  if (m.channelId && (m.userId === S.user.id || S.detail?.server.ownerId === S.user.id)) {
-    const del = el('button', { className: 'del', title: 'Apagar mensagem', type: 'button' }, iconEl('trash', 15));
-    del.onclick = async () => {
-      if (!(await formDialog({ title: 'Apagar mensagem?', text: preview(m).slice(0, 200), okText: 'Apagar', danger: true }))) return;
-      api('DELETE', `/api/messages/${m.id}`).catch((e) => toast(e.message));
-    };
-    node.append(del);
+  if (m.reactions?.length) {
+    const row = el('div', { className: 'reactions' });
+    for (const r of m.reactions) {
+      const mine = r.users.includes(S.user.id);
+      const b = el('button', { type: 'button', className: 'reaction' + (mine ? ' mine' : ''), title: r.users.map(userName).join(', ') },
+        el('span', { className: 'r-emoji', textContent: r.emoji }), el('span', { className: 'r-count', textContent: String(r.users.length) }));
+      b.onclick = () => react(m, r.emoji);
+      row.append(b);
+    }
+    body.append(row);
   }
+  node.append(avatar, body, messageActions(m, node));
+  // Celular (sem mouse): tocar na mensagem mostra as ações
+  node.onclick = (e) => {
+    if (!matchMedia('(hover: none)').matches || e.target.closest('a, button, textarea, video, audio')) return;
+    document.querySelectorAll('.msg.show-actions').forEach((x) => { if (x !== node) x.classList.remove('show-actions'); });
+    node.classList.toggle('show-actions');
+  };
   return node;
+}
+
+// Barra que aparece ao passar o mouse: reagir, responder, editar, apagar
+function messageActions(m, node) {
+  const mine = m.userId === S.user.id;
+  const bar = el('div', { className: 'msg-actions' });
+  const btn = (ic, title, fn) => {
+    const b = el('button', { type: 'button', title }, iconEl(ic, 16));
+    b.onclick = (e) => { e.stopPropagation(); fn(b); };
+    bar.append(b);
+    return b;
+  };
+  btn('smile-plus', 'Reagir', (b) => {
+    const open = bar.querySelector('.react-picker');
+    document.querySelectorAll('.react-picker').forEach((x) => x.remove());
+    if (open) return;
+    const pick = el('div', { className: 'react-picker' });
+    for (const e of REACTIONS) {
+      const o = el('button', { type: 'button', textContent: e });
+      o.onclick = (ev) => { ev.stopPropagation(); pick.remove(); react(m, e); };
+      pick.append(o);
+    }
+    b.after(pick);
+  });
+  btn('reply', 'Responder', () => startReply(m));
+  if (mine) btn('edit', 'Editar', () => startEdit(m, node));
+  if (mine || (m.channelId && S.detail?.server.ownerId === S.user.id)) {
+    const del = btn('trash', 'Apagar mensagem', async () => {
+      if (!(await formDialog({ title: 'Apagar mensagem?', text: preview(m).slice(0, 200), okText: 'Apagar', danger: true }))) return;
+      api('DELETE', msgUrl(m)).catch((e) => toast(e.message));
+    });
+    del.classList.add('danger');
+  }
+  return bar;
+}
+document.addEventListener('click', (e) => { if (!e.target.closest('.react-picker')) document.querySelectorAll('.react-picker').forEach((x) => x.remove()); });
+
+async function react(m, emoji) {
+  try { updateMessage(await api('POST', `${msgUrl(m)}/reactions`, { emoji })); } catch (err) { toast(err.message); }
+}
+
+// Troca uma mensagem já carregada (edição ou reação) e redesenha só ela
+function updateMessage(m) {
+  const key = msgKey(m);
+  const list = S.messages.get(key);
+  if (!list) return;
+  const i = list.findIndex((x) => x.id === m.id);
+  if (i < 0) return;
+  list[i] = m;
+  if (currentConv()?.key !== key) return;
+  const node = $(`#messages .msg[data-id="${m.id}"]`);
+  if (node && !node.classList.contains('editing')) node.replaceWith(messageNode(m, list[i - 1] || null));
+}
+
+function removeMessage(key, id) {
+  const list = S.messages.get(key);
+  if (list) S.messages.set(key, list.filter((x) => x.id !== id));
+  if (currentConv()?.key === key) renderMessages(false);
+}
+
+function jumpTo(id) {
+  const node = $(`#messages .msg[data-id="${id}"]`);
+  if (!node) return toast('Essa mensagem está mais acima. Carregue as mensagens antigas.');
+  node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  node.classList.remove('flash');
+  void node.offsetWidth;
+  node.classList.add('flash');
+}
+
+/* Responder */
+function startReply(m) {
+  const conv = currentConv();
+  if (!conv) return;
+  S.reply = { key: conv.key, id: m.id, author: m.author, text: preview(m) };
+  renderReplyBar();
+  input.focus();
+}
+function cancelReply() { S.reply = null; renderReplyBar(); }
+function renderReplyBar() {
+  const bar = $('#reply-bar');
+  const r = S.reply && S.reply.key === currentConv()?.key ? S.reply : null;
+  bar.classList.toggle('hidden', !r);
+  if (!r) return;
+  const x = el('button', { type: 'button', className: 'icon-btn small', title: 'Cancelar resposta (Esc)' }, iconEl('x', 14));
+  x.onclick = cancelReply;
+  bar.replaceChildren(iconEl('reply', 14), el('span', {}, 'Respondendo a ', el('b', { textContent: r.author }), ': '),
+    el('span', { className: 'q-text', textContent: r.text.slice(0, 120) }), x);
+}
+
+/* Editar na própria mensagem: Enter salva, Esc cancela */
+function startEdit(m, node) {
+  if (node.classList.contains('editing')) return;
+  node.classList.add('editing');
+  const box = el('div', { className: 'edit-box' });
+  const ta = el('textarea', { value: m.text || '', rows: 1, maxLength: 4000 });
+  const hint = el('div', { className: 'edit-hint', textContent: 'Enter salva · Esc cancela' });
+  box.append(ta, hint);
+  const textEl = node.querySelector('.text');
+  if (textEl) textEl.replaceWith(box); else node.querySelector('.body').append(box);
+  const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; };
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  fit();
+  ta.oninput = fit;
+  const close = () => {
+    const list = S.messages.get(msgKey(m)) || [];
+    const cur = list.find((x) => x.id === m.id) || m;
+    const i = list.indexOf(cur);
+    node.replaceWith(messageNode(cur, list[i - 1] || null));
+  };
+  ta.onkeydown = async (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); input.focus(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      const text = ta.value.trim();
+      if (text === (m.text || '')) return close();
+      try {
+        const updated = await api('PATCH', msgUrl(m), { text });
+        node.classList.remove('editing');
+        const list = S.messages.get(msgKey(m));
+        const i = list ? list.findIndex((x) => x.id === m.id) : -1;
+        if (i >= 0) list[i] = updated;
+        close();
+      } catch (err) { toast(err.message); }
+    }
+  };
 }
 
 function preview(m) {
@@ -618,6 +779,14 @@ input.addEventListener('keydown', (e) => {
     e.preventDefault();
     sendMessage();
   }
+  if (e.key === 'Escape' && S.reply) { e.preventDefault(); cancelReply(); }
+  // Seta para cima com a caixa vazia: editar a última mensagem que você mandou
+  if (e.key === 'ArrowUp' && !input.value) {
+    const conv = currentConv();
+    const last = conv && [...(S.messages.get(conv.key) || [])].reverse().find((x) => x.userId === S.user.id && (x.text || x.file));
+    const node = last && $(`#messages .msg[data-id="${last.id}"]`);
+    if (node) { e.preventDefault(); startEdit(last, node); }
+  }
 });
 input.addEventListener('input', () => {
   input.style.height = 'auto';
@@ -638,7 +807,9 @@ async function sendMessage() {
   input.style.height = 'auto';
   lastTypingSent = 0;
   try {
-    const m = await api('POST', conv.url, { text });
+    const reply = S.reply?.key === conv.key ? S.reply : null;
+    const m = await api('POST', conv.url, { text, replyTo: reply?.id });
+    if (reply && S.reply === reply) cancelReply();
     const list = S.messages.get(conv.key);
     if (list && !list.some((x) => x.id === m.id)) { list.push(m); if (currentConv()?.key === conv.key) appendMessage(m, conv.key); }
   } catch (err) {
@@ -651,6 +822,8 @@ function clearTyping(key, userId) {
   S.typing.get(key)?.delete(userId);
   renderTyping();
 }
+
+function renderTypingAndReply() { renderTyping(); renderReplyBar(); }
 
 function renderTyping() {
   const conv = currentConv();
@@ -1110,7 +1283,7 @@ function renderMain() {
     input.placeholder = ch ? `Conversar em #${ch.name}` : '';
     $('#btn-nudge').title = 'Chamar a atenção de todos na conversa';
     renderMessages();
-    renderTyping();
+    renderTypingAndReply();
   } else if (S.view === 'dm') {
     const u = S.peers.get(S.dmUserId);
     const name = u?.displayName || 'Contato';
@@ -1119,7 +1292,7 @@ function renderMain() {
     input.placeholder = `Conversar com ${name}`;
     $('#btn-nudge').title = `Chamar a atenção de ${name}`;
     renderMessages();
-    renderTyping();
+    renderTypingAndReply();
   } else if (S.view === 'voice') {
     const ch = S.detail?.channels.find((c) => c.id === S.viewVoiceChannelId);
     title.replaceChildren(...(ch ? [iconEl('volume', 17), ` ${ch.name}`] : []));

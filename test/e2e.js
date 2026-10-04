@@ -93,6 +93,26 @@ const tag = Date.now().toString(36);
   await bia.click('#text-channels .channel >> nth=0');
   console.log('conversa particular ok');
 
+  // Reagir, responder e editar
+  const anaMsg = bia.locator('.msg', { hasText: 'oi bia, bem-vinda' });
+  await anaMsg.hover();
+  await anaMsg.locator('.msg-actions button[title=Reagir]').click();
+  await bia.click('.react-picker button >> text=🔥');
+  await ana.waitForSelector('.reaction >> text=🔥');
+  const biaMsg = ana.locator('.msg', { hasText: 'valeu ana' });
+  await biaMsg.hover();
+  await biaMsg.locator('.msg-actions button[title=Responder]').click();
+  await ana.waitForSelector('#reply-bar:not(.hidden) >> text=Bia');
+  await ana.fill('#chat-input', 'de nada!');
+  await ana.press('#chat-input', 'Enter');
+  await bia.waitForSelector('.msg .quote >> text=valeu ana');
+  await ana.press('#chat-input', 'ArrowUp');
+  await ana.fill('.edit-box textarea', 'de nada, Bia!');
+  await ana.press('.edit-box textarea', 'Enter');
+  await bia.waitForSelector('.msg .text >> text=de nada, Bia!');
+  await bia.waitForSelector('.msg .edited');
+  console.log('reagir, responder e editar ok');
+
   // Imagem e arquivo no chat (o print da tela serve de imagem de teste)
   await bia.waitForSelector('.msg .text >> text=valeu ana');
   const shot = await ana.screenshot({ clip: { x: 0, y: 0, width: 400, height: 300 } });

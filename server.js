@@ -38,6 +38,8 @@ const MIME = {
 const INLINE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp',
   'video/mp4', 'video/webm', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm']);
 const MAX_FILE = 8 * 1024 * 1024;
+// Reações disponíveis (lista fechada: nada de texto arbitrário)
+const REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥', '🎉', '👀'];
 const CHUNK = 512 * 1024;
 
 class HttpError extends Error {
@@ -148,14 +150,88 @@ function createApp({
     return row.f_key ? { key: row.f_key, name: row.f_name, mime: row.f_mime, size: row.f_size } : null;
   }
 
-  function messagePayload(row) {
-    return { id: row.id, channelId: row.channel_id, userId: row.user_id, author: row.author, authorAvatar: row.author_avatar || null, text: row.text, file: filePayload(row), createdAt: row.created_at };
+  // Campos comuns: resposta (citação), edição e reações
+  function extras(row) {
+    return {
+      replyTo: row.reply_to ? (row.r_author != null ? { id: row.reply_to, author: row.r_author, text: (row.r_text || (row.r_file ? '📎 arquivo' : '')).slice(0, 140) } : { id: row.reply_to, deleted: true }) : null,
+      editedAt: row.edited_at || null,
+      reactions: [],
+    };
   }
 
-  const MSG_SELECT = `SELECT m.*, u.display_name AS author, u.avatar_key AS author_avatar, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size
-    FROM messages m JOIN users u ON u.id = m.user_id LEFT JOIN files f ON f.id = m.file_id`;
-  const DM_SELECT = `SELECT m.*, u.display_name AS author, u.avatar_key AS author_avatar, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size
-    FROM dm_messages m JOIN users u ON u.id = m.from_id LEFT JOIN files f ON f.id = m.file_id`;
+  function messagePayload(row) {
+    return { id: row.id, channelId: row.channel_id, userId: row.user_id, author: row.author, authorAvatar: row.author_avatar || null, text: row.text, file: filePayload(row), createdAt: row.created_at, ...extras(row) };
+  }
+
+  const MSG_SELECT = `SELECT m.*, u.display_name AS author, u.avatar_key AS author_avatar, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size,
+      r.text AS r_text, r.file_id AS r_file, ru.display_name AS r_author
+    FROM messages m JOIN users u ON u.id = m.user_id LEFT JOIN files f ON f.id = m.file_id
+    LEFT JOIN messages r ON r.id = m.reply_to LEFT JOIN users ru ON ru.id = r.user_id`;
+  const DM_SELECT = `SELECT m.*, u.display_name AS author, u.avatar_key AS author_avatar, f.key AS f_key, f.name AS f_name, f.mime AS f_mime, f.size AS f_size,
+      r.text AS r_text, r.file_id AS r_file, ru.display_name AS r_author
+    FROM dm_messages m JOIN users u ON u.id = m.from_id LEFT JOIN files f ON f.id = m.file_id
+    LEFT JOIN dm_messages r ON r.id = m.reply_to LEFT JOIN users ru ON ru.id = r.from_id`;
+
+  // Junta as reações (emoji -> quem reagiu) nas mensagens
+  async function withReactions(kind, messages) {
+    if (!messages.length) return messages;
+    const ids = messages.map((m) => m.id);
+    const rows = await db.all(`SELECT message_id AS id, emoji, user_id AS userId FROM reactions
+      WHERE kind = ? AND message_id IN (${ids.map(() => '?').join(',')}) ORDER BY created_at`, kind, ...ids);
+    const by = new Map(messages.map((m) => [m.id, m]));
+    for (const r of rows) {
+      const m = by.get(r.id);
+      let g = m.reactions.find((x) => x.emoji === r.emoji);
+      if (!g) { g = { emoji: r.emoji, users: [] }; m.reactions.push(g); }
+      g.users.push(r.userId);
+    }
+    return messages;
+  }
+
+  async function loadMessage(id) {
+    const row = await db.get(`${MSG_SELECT} WHERE m.id = ?`, id);
+    return row ? (await withReactions('c', [messagePayload(row)]))[0] : null;
+  }
+
+  async function loadDm(id) {
+    const row = await db.get(`${DM_SELECT} WHERE m.id = ?`, id);
+    return row ? (await withReactions('d', [dmPayload(row)]))[0] : null;
+  }
+
+  // Mensagem de canal que a pessoa pode ver
+  async function requireMessage(id, user) {
+    const m = await db.get('SELECT m.id, m.user_id, m.file_id, c.server_id, c.id AS channel_id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = ?', Number(id));
+    if (!m || !(await isMember(m.server_id, user.id))) throw new HttpError(404, 'Mensagem não encontrada.');
+    return m;
+  }
+
+  // Mensagem particular em que a pessoa está
+  async function requireDm(id, user) {
+    const m = await db.get('SELECT id, from_id, to_id, file_id FROM dm_messages WHERE id = ?', Number(id));
+    if (!m || (m.from_id !== user.id && m.to_id !== user.id)) throw new HttpError(404, 'Mensagem não encontrada.');
+    return m;
+  }
+
+  function cleanEmoji(e) {
+    if (!REACTIONS.includes(e)) throw new HttpError(400, 'Reação inválida.');
+    return e;
+  }
+
+  async function toggleReaction(kind, messageId, user, emoji) {
+    const had = await db.get('SELECT 1 FROM reactions WHERE kind = ? AND message_id = ? AND user_id = ? AND emoji = ?', kind, messageId, user.id, emoji);
+    if (had) await db.run('DELETE FROM reactions WHERE kind = ? AND message_id = ? AND user_id = ? AND emoji = ?', kind, messageId, user.id, emoji);
+    else {
+      const n = (await db.get('SELECT COUNT(*) AS n FROM reactions WHERE kind = ? AND message_id = ? AND user_id = ?', kind, messageId, user.id)).n;
+      if (n >= REACTIONS.length) throw new HttpError(400, 'Reações demais.');
+      await db.run('INSERT INTO reactions (kind, message_id, user_id, emoji, created_at) VALUES (?, ?, ?, ?, ?)', kind, messageId, user.id, emoji, now());
+    }
+  }
+
+  function cleanEdit(body) {
+    const text = String(body.text ?? '').trim();
+    if (text.length > 4000) throw new HttpError(400, 'Mensagem longa demais (máximo 4000 caracteres).');
+    return text;
+  }
 
   /* ---------------- Arquivos ---------------- */
 
@@ -187,7 +263,7 @@ function createApp({
   /* ---------------- Conversas privadas ---------------- */
 
   function dmPayload(row) {
-    return { id: row.id, fromId: row.from_id, toId: row.to_id, userId: row.from_id, author: row.author, authorAvatar: row.author_avatar || null, text: row.text, file: filePayload(row), createdAt: row.created_at };
+    return { id: row.id, fromId: row.from_id, toId: row.to_id, userId: row.from_id, author: row.author, authorAvatar: row.author_avatar || null, text: row.text, file: filePayload(row), createdAt: row.created_at, ...extras(row) };
   }
 
   // Dá para conversar com quem está em algum servidor com você (ou com quem você já conversou)
@@ -505,6 +581,7 @@ function createApp({
     for (const uid of memberIds) kickFromServer(s.id, uid);
     // Apaga em ordem, sem depender de ON DELETE CASCADE (nem todo banco na nuvem liga as chaves estrangeiras)
     await deleteFiles((await db.all('SELECT file_id AS id FROM messages WHERE file_id IS NOT NULL AND channel_id IN (SELECT id FROM channels WHERE server_id = ?)', s.id)).map((r) => r.id));
+    await db.run("DELETE FROM reactions WHERE kind = 'c' AND message_id IN (SELECT id FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE server_id = ?))", s.id);
     await db.run('DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE server_id = ?)', s.id);
     await db.run('DELETE FROM channels WHERE server_id = ?', s.id);
     await db.run('DELETE FROM members WHERE server_id = ?', s.id);
@@ -558,6 +635,7 @@ function createApp({
       if (conn.voice?.channelId === c.id) { conn.voice = null; send(conn, { type: 'voice-ended' }); }
     }
     await deleteFiles((await db.all('SELECT file_id AS id FROM messages WHERE file_id IS NOT NULL AND channel_id = ?', c.id)).map((r) => r.id));
+    await db.run("DELETE FROM reactions WHERE kind = 'c' AND message_id IN (SELECT id FROM messages WHERE channel_id = ?)", c.id);
     await db.run('DELETE FROM messages WHERE channel_id = ?', c.id);
     await db.run('DELETE FROM channels WHERE id = ?', c.id);
     toServer(c.serverId, { type: 'server-update', serverId: c.serverId });
@@ -588,7 +666,7 @@ function createApp({
     const before = Number(query.get('before')) || Number.MAX_SAFE_INTEGER;
     const limit = Math.min(Number(query.get('limit')) || 50, 100);
     const rows = await db.all(`${MSG_SELECT} WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?`, c.id, before, limit);
-    return { messages: rows.reverse().map(messagePayload) };
+    return { messages: await withReactions('c', rows.reverse().map(messagePayload)) };
   });
 
   route('POST', '/api/channels/:id/messages', async ({ user, params, body }) => {
@@ -596,18 +674,43 @@ function createApp({
     if (c.type !== 'text') throw new HttpError(400, 'Canal de voz não tem mensagens.');
     const file = await claimFile(body.fileKey, user);
     const text = cleanText(body, file);
-    const { lastInsertRowid } = await db.run('INSERT INTO messages (channel_id, user_id, text, file_id, created_at) VALUES (?, ?, ?, ?, ?)', c.id, user.id, text, file?.id ?? null, now());
-    const row = await db.get(`${MSG_SELECT} WHERE m.id = ?`, lastInsertRowid);
-    const message = messagePayload(row);
+    let replyTo = null;
+    if (body.replyTo) {
+      const r = await db.get('SELECT id FROM messages WHERE id = ? AND channel_id = ?', Number(body.replyTo), c.id);
+      if (!r) throw new HttpError(400, 'A mensagem respondida não existe mais.');
+      replyTo = r.id;
+    }
+    const { lastInsertRowid } = await db.run('INSERT INTO messages (channel_id, user_id, text, file_id, reply_to, created_at) VALUES (?, ?, ?, ?, ?, ?)', c.id, user.id, text, file?.id ?? null, replyTo, now());
+    const message = await loadMessage(lastInsertRowid);
     toServer(c.serverId, { type: 'message', serverId: c.serverId, message });
     return message;
   });
 
+  // Editar a própria mensagem
+  route('PATCH', '/api/messages/:id', async ({ user, params, body }) => {
+    const m = await requireMessage(params.id, user);
+    if (m.user_id !== user.id) throw new HttpError(403, 'Só quem escreveu pode editar.');
+    const text = cleanEdit(body);
+    if (!text && !m.file_id) throw new HttpError(400, 'Mensagem vazia. Para tirar, apague a mensagem.');
+    await db.run('UPDATE messages SET text = ?, edited_at = ? WHERE id = ?', text, now(), m.id);
+    const message = await loadMessage(m.id);
+    toServer(m.server_id, { type: 'message-updated', serverId: m.server_id, message });
+    return message;
+  });
+
+  route('POST', '/api/messages/:id/reactions', async ({ user, params, body }) => {
+    const m = await requireMessage(params.id, user);
+    await toggleReaction('c', m.id, user, cleanEmoji(body.emoji));
+    const message = await loadMessage(m.id);
+    toServer(m.server_id, { type: 'message-updated', serverId: m.server_id, message });
+    return message;
+  });
+
   route('DELETE', '/api/messages/:id', async ({ user, params }) => {
-    const m = await db.get('SELECT m.id, m.user_id, m.file_id, c.server_id, c.id AS channel_id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = ?', Number(params.id));
-    if (!m || !(await isMember(m.server_id, user.id))) throw new HttpError(404, 'Mensagem não encontrada.');
+    const m = await requireMessage(params.id, user);
     if (m.user_id !== user.id && (await serverRow(m.server_id)).ownerId !== user.id) throw new HttpError(403, 'Você não pode apagar essa mensagem.');
     await db.run('DELETE FROM messages WHERE id = ?', m.id);
+    await db.run("DELETE FROM reactions WHERE kind = 'c' AND message_id = ?", m.id);
     await deleteFiles([m.file_id]);
     toServer(m.server_id, { type: 'message-deleted', serverId: m.server_id, channelId: m.channel_id, messageId: m.id });
     return { ok: true };
@@ -638,7 +741,7 @@ function createApp({
                     ORDER BY m.id DESC LIMIT ?`, user.id, peer.id, peer.id, user.id, before, limit);
     return {
       user: { ...peer, status: visibleStatus(peer.id) },
-      messages: rows.reverse().map(dmPayload),
+      messages: await withReactions('d', rows.reverse().map(dmPayload)),
     };
   });
 
@@ -646,12 +749,47 @@ function createApp({
     const peer = await requireDmPeer(Number(params.userId), user);
     const file = await claimFile(body.fileKey, user);
     const text = cleanText(body, file);
-    const { lastInsertRowid } = await db.run('INSERT INTO dm_messages (from_id, to_id, text, file_id, created_at) VALUES (?, ?, ?, ?, ?)', user.id, peer.id, text, file?.id ?? null, now());
-    const message = dmPayload(await db.get(`${DM_SELECT} WHERE m.id = ?`, lastInsertRowid));
+    let replyTo = null;
+    if (body.replyTo) {
+      const r = await db.get('SELECT id FROM dm_messages WHERE id = ? AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))', Number(body.replyTo), user.id, peer.id, peer.id, user.id);
+      if (!r) throw new HttpError(400, 'A mensagem respondida não existe mais.');
+      replyTo = r.id;
+    }
+    const { lastInsertRowid } = await db.run('INSERT INTO dm_messages (from_id, to_id, text, file_id, reply_to, created_at) VALUES (?, ?, ?, ?, ?, ?)', user.id, peer.id, text, file?.id ?? null, replyTo, now());
+    const message = await loadDm(lastInsertRowid);
     const out = { type: 'dm', message, from: { id: user.id, username: user.username, displayName: user.displayName, personalMessage: user.personalMessage, avatarKey: user.avatarKey, status: visibleStatus(user.id) } };
     toUser(peer.id, out);
     toUser(user.id, out);
     return message;
+  });
+
+  route('PATCH', '/api/dm/messages/:id', async ({ user, params, body }) => {
+    const m = await requireDm(params.id, user);
+    if (m.from_id !== user.id) throw new HttpError(403, 'Só quem escreveu pode editar.');
+    const text = cleanEdit(body);
+    if (!text && !m.file_id) throw new HttpError(400, 'Mensagem vazia. Para tirar, apague a mensagem.');
+    await db.run('UPDATE dm_messages SET text = ?, edited_at = ? WHERE id = ?', text, now(), m.id);
+    const message = await loadDm(m.id);
+    for (const uid of [m.from_id, m.to_id]) toUser(uid, { type: 'dm-updated', message });
+    return message;
+  });
+
+  route('POST', '/api/dm/messages/:id/reactions', async ({ user, params, body }) => {
+    const m = await requireDm(params.id, user);
+    await toggleReaction('d', m.id, user, cleanEmoji(body.emoji));
+    const message = await loadDm(m.id);
+    for (const uid of [m.from_id, m.to_id]) toUser(uid, { type: 'dm-updated', message });
+    return message;
+  });
+
+  route('DELETE', '/api/dm/messages/:id', async ({ user, params }) => {
+    const m = await requireDm(params.id, user);
+    if (m.from_id !== user.id) throw new HttpError(403, 'Só quem escreveu pode apagar.');
+    await db.run('DELETE FROM dm_messages WHERE id = ?', m.id);
+    await db.run("DELETE FROM reactions WHERE kind = 'd' AND message_id = ?", m.id);
+    await deleteFiles([m.file_id]);
+    for (const uid of [m.from_id, m.to_id]) toUser(uid, { type: 'dm-deleted', messageId: m.id, fromId: m.from_id, toId: m.to_id });
+    return { ok: true };
   });
 
   // Marca como lidas as mensagens que a outra pessoa mandou

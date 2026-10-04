@@ -4,6 +4,7 @@ Chat de texto, voz e compartilhamento de tela ao mesmo tempo, com cara de mensag
 
 - **Visual MSN moderno:** modo claro e escuro (automático ou no botão 🌙), ícones próprios, cantos arredondados; mantém o quadrinho de status, o "diz:" e o chamar atenção
 - **Visual de mensageiro clássico:** lista de contatos com status (Disponível, Ocupado, Ausente, Invisível), mensagem pessoal, "Fulano diz:", emoticons por atalho (`:)`, `(L)`, `(Y)`...), **chamar atenção** que treme a janela e sons de mensagem/contato online
+- **Reagir, responder e editar:** passe o mouse na mensagem (ou toque, no celular) para reagir com emoji, responder citando, editar ou apagar; seta ↑ na caixa vazia edita a última mensagem
 - **Conversa particular:** clique num contato para abrir um chat só entre vocês dois, com aviso de mensagem nova, "digitando…" e chamar atenção só para aquela pessoa
 - **Imagens e arquivos:** botão 📎, colar (Ctrl+V) ou arrastar para o chat; imagens, vídeos e áudios aparecem na conversa (até 8 MB, guardados no banco)
 - **Avisos do Windows:** notificação quando chega mensagem com a janela minimizada (clique abre a conversa), ícone piscando e número de novidades na barra de tarefas. O app instalado se atualiza sozinho pelas Releases do GitHub

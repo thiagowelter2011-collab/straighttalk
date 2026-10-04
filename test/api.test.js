@@ -331,6 +331,48 @@ test('foto de perfil', async () => {
   assert.equal((await fetch(`${base}/files/${f2.key}`)).status, 404);
 });
 
+test('editar, responder e reagir (canal e conversa particular)', async () => {
+  const sb = await socket(bia);
+  await sb.wait((m) => m.type === 'hello');
+  let r = await call('POST', `/api/channels/${textId}/messages`, { text: 'pergunta: pizza hoje?' }, ana);
+  const q = r.data;
+  r = await call('POST', `/api/channels/${textId}/messages`, { text: 'bora!', replyTo: q.id }, bia);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.data.replyTo, { id: q.id, author: 'Ana', text: 'pergunta: pizza hoje?' });
+  assert.equal((await call('POST', `/api/channels/${textId}/messages`, { text: 'x', replyTo: 999999 }, bia)).status, 400);
+
+  assert.equal((await call('PATCH', `/api/messages/${q.id}`, { text: 'outra' }, bia)).status, 403, 'só o autor edita');
+  r = await call('PATCH', `/api/messages/${q.id}`, { text: 'pergunta: pizza amanhã?' }, ana);
+  assert.equal(r.status, 200);
+  assert.ok(r.data.editedAt);
+  const up = await sb.wait((m) => m.type === 'message-updated' && m.message.id === q.id);
+  assert.equal(up.message.text, 'pergunta: pizza amanhã?');
+
+  r = await call('POST', `/api/messages/${q.id}/reactions`, { emoji: '🔥' }, bia);
+  assert.deepEqual(r.data.reactions.map((x) => x.emoji), ['🔥']);
+  await call('POST', `/api/messages/${q.id}/reactions`, { emoji: '🔥' }, ana);
+  r = await call('GET', `/api/channels/${textId}/messages`, null, ana);
+  assert.equal(r.data.messages.find((m) => m.id === q.id).reactions[0].users.length, 2);
+  r = await call('POST', `/api/messages/${q.id}/reactions`, { emoji: '🔥' }, bia);
+  assert.deepEqual(r.data.reactions[0].users.length, 1, 'clicar de novo tira a reação');
+  assert.equal((await call('POST', `/api/messages/${q.id}/reactions`, { emoji: '<b>' }, bia)).status, 400);
+
+  const anaId = (await call('GET', '/api/me', null, ana)).data.user.id;
+  const d1 = (await call('POST', `/api/dm/${anaId}/messages`, { text: 'oi particular' }, bia)).data;
+  const d2 = (await call('POST', `/api/dm/${anaId}/messages`, { text: 'respondendo', replyTo: d1.id }, bia)).data;
+  assert.equal(d2.replyTo.text, 'oi particular');
+  assert.equal((await call('POST', `/api/dm/messages/${d1.id}/reactions`, { emoji: '❤️' }, ana)).data.reactions[0].emoji, '❤️');
+  assert.equal((await call('PATCH', `/api/dm/messages/${d1.id}`, { text: 'mudei' }, ana)).status, 403);
+  assert.equal((await call('PATCH', `/api/dm/messages/${d1.id}`, { text: 'oi editado' }, bia)).data.text, 'oi editado');
+  assert.equal((await call('DELETE', `/api/dm/messages/${d1.id}`, null, ana)).status, 403);
+  assert.equal((await call('DELETE', `/api/dm/messages/${d1.id}`, null, bia)).status, 200);
+  r = await call('GET', `/api/dm/${anaId}/messages`, null, bia);
+  assert.equal(r.data.messages.find((m) => m.id === d2.id).replyTo.deleted, true, 'citação de mensagem apagada');
+  const caio = (await call('POST', '/api/login', { username: 'caio', password: '123456' })).data.token;
+  assert.equal((await call('POST', `/api/dm/messages/${d2.id}/reactions`, { emoji: '👍' }, caio)).status, 404, 'quem não está na conversa');
+  sb.ws.close();
+});
+
 test('link para baixar o app do Windows', async () => {
   const res = await fetch(base + '/baixar', { redirect: 'manual' });
   assert.equal(res.status, 302);
