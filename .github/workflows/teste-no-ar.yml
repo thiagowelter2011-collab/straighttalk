@@ -1,7 +1,7 @@
 name: Teste no ar
 
 # Abre o site publicado com 3 pessoas (navegadores de verdade) e testa chat, voz e tela.
-# Cria contas de teste (anaXXXX, biaXXXX, caioXXXX) e apaga o servidor de teste no fim.
+# Usa as contas fixas teste.ana, teste.bia e teste.caio (criadas antes da mensalidade, então grátis) e apaga o servidor de teste no fim.
 on:
   workflow_dispatch:
     inputs:
@@ -29,6 +29,14 @@ jobs:
             sleep 15
           done
           echo "::warning::O site ainda não está com o commit $GITHUB_SHA; testando a versão no ar"
+      # Senha das contas fixas teste.ana/bia/caio, tirada de um segredo que já existe (ninguém precisa digitar nada)
+      - name: Senha das contas de teste
+        env:
+          SEED: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          p=$(printf '%s' "straighttalk-e2e:$SEED" | sha256sum | cut -c1-32)
+          echo "::add-mask::$p"
+          echo "E2E_PASSWORD=$p" >> "$GITHUB_ENV"
       - run: mkdir -p prints && node test/e2e.js "$URL" prints
         env:
           URL: ${{ inputs.url || vars.STRAIGHTTALK_URL || 'https://straighttalk.onrender.com' }}

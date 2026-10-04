@@ -4,8 +4,43 @@ const { chromium } = require(process.env.PLAYWRIGHT || 'playwright');
 const BASE = process.argv[2] || 'http://localhost:3000';
 const OUT = process.argv[3] || '.';
 const tag = Date.now().toString(36);
+// Com E2E_PASSWORD (no "Teste no ar"), usa sempre as mesmas contas teste.ana/bia/caio, criadas antes da mensalidade
+// e por isso grátis; sem ela, cria contas novas a cada vez
+const FIXED = process.env.E2E_PASSWORD;
+const PASS = FIXED || 'senha123';
+const uname = (n) => (FIXED ? `teste.${n}` : `${n}${tag}`);
+
+async function apiCall(method, path, body, token) {
+  const res = await fetch(BASE + path, { method, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+
+// Deixa as contas fixas como novas: sem servidores, sem amizade entre elas, conversas lidas, sem foto
+async function resetFixedAccounts() {
+  const acc = {};
+  for (const [n, display] of [['ana', 'Ana'], ['bia', 'Bia'], ['caio', 'Caio']]) {
+    let r = await apiCall('POST', '/api/login', { username: uname(n), password: PASS });
+    if (r.status === 401) r = await apiCall('POST', '/api/register', { username: uname(n), password: PASS, displayName: display });
+    if (!r.data.token) throw new Error(`conta ${uname(n)}: ${r.status} ${JSON.stringify(r.data)}`);
+    const t = r.data.token;
+    const me = (await apiCall('GET', '/api/me', null, t)).data;
+    if (me.billing?.locked) throw new Error(`a conta ${uname(n)} caiu na mensalidade`);
+    await apiCall('PATCH', '/api/me', { displayName: display, personalMessage: '', avatarKey: null }, t);
+    acc[n] = { token: t, id: me.user.id, servers: me.servers };
+  }
+  for (const a of Object.values(acc)) {
+    for (const s of a.servers) await apiCall(s.ownerId === a.id ? 'DELETE' : 'POST', s.ownerId === a.id ? `/api/servers/${s.id}` : `/api/servers/${s.id}/leave`, null, a.token);
+    for (const b of Object.values(acc)) {
+      if (a === b) continue;
+      await apiCall('DELETE', `/api/friends/${b.id}`, null, a.token);
+      await apiCall('POST', `/api/dm/${b.id}/read`, null, a.token);
+    }
+  }
+  console.log('contas de teste fixas prontas');
+}
 
 (async () => {
+  if (FIXED) await resetFixedAccounts();
   const browser = await chromium.launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
   const errors = [];
   async function person(name) {
@@ -25,15 +60,22 @@ const tag = Date.now().toString(36);
   }
   async function register(page, user, display, url = BASE) {
     await page.goto(url);
+    if (FIXED) {
+      if ((await page.textContent('#auth-submit')) !== 'Entrar') await page.click('#auth-switch');
+      await page.fill('#auth-user', user);
+      await page.fill('#auth-pass', PASS);
+      await page.click('#auth-submit');
+      return;
+    }
     if (await page.isVisible('#auth-switch') && (await page.textContent('#auth-submit')) === 'Entrar') await page.click('#auth-switch');
     await page.fill('#auth-display', display);
     await page.fill('#auth-user', user);
-    await page.fill('#auth-pass', 'senha123');
+    await page.fill('#auth-pass', PASS);
     await page.click('#auth-submit');
   }
 
   const ana = await person('Ana');
-  await register(ana, `ana${tag}`, 'Ana');
+  await register(ana, uname('ana'), 'Ana');
   await ana.click('#btn-add-server');
   await ana.fill('#dlg-fields input', 'Cúpula Teste');
   await ana.click('#dlg-ok');
@@ -45,7 +87,7 @@ const tag = Date.now().toString(36);
   console.log('convite', invite);
 
   const bia = await person('Bia');
-  await register(bia, `bia${tag}`, 'Bia', invite);
+  await register(bia, uname('bia'), 'Bia', invite);
   await bia.waitForSelector('#dlg-form[open]');
   await bia.click('#dlg-ok');
   await bia.waitForSelector('#text-channels .channel.active');
@@ -95,7 +137,7 @@ const tag = Date.now().toString(36);
 
   // Amigos: Bia pede amizade pelo nome de usuário, Ana aceita
   await bia.click('#btn-add-friend');
-  await bia.fill('#dlg-fields input', `ana${tag}`);
+  await bia.fill('#dlg-fields input', uname('ana'));
   await bia.click('#dlg-ok');
   await bia.waitForSelector('#friend-list .friend-pending >> text=Ana');
   await ana.waitForSelector('#friends-count >> text=1');
@@ -152,7 +194,7 @@ const tag = Date.now().toString(36);
   console.log('foto de perfil ok');
 
   const caio = await person('Caio');
-  await register(caio, `caio${tag}`, 'Caio', invite);
+  await register(caio, uname('caio'), 'Caio', invite);
   await caio.waitForSelector('#dlg-form[open]');
   await caio.click('#dlg-ok');
   await caio.waitForSelector('#text-channels .channel.active');
