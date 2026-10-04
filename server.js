@@ -13,6 +13,9 @@ const { openDb } = require('./lib/db');
 const media = require('./lib/media');
 const { createPayments } = require('./lib/payments');
 
+// Só GIFs do Tenor aparecem como imagem no chat (outros links continuam links)
+const GIF_URL = /^https:\/\/media\d*\.tenor\.com\/[\w\-/.]+\.gif$/;
+
 const PUBLIC = path.join(__dirname, 'public');
 const DOWNLOAD_BASE = 'https://github.com/thiagowelter2011-collab/straighttalk/releases/latest/download';
 const LIVEKIT_UMD = path.join(path.dirname(require.resolve('livekit-client')), 'livekit-client.umd.js');
@@ -576,8 +579,38 @@ function createApp({
   route('GET', '/api/me', async ({ user }) => {
     const billing = { ...billingInfo(user), admin: isAdmin(user) };
     if (billing.locked) return { user, billing, servers: [] };
-    return { user, billing, servers: await listServers(user.id), media: media.clientConfig(user.id) };
+    return { user, billing, servers: await listServers(user.id), media: media.clientConfig(user.id), gifs: !!process.env.TENOR_API_KEY };
   }, { unpaid: true });
+
+  /* ---------------- GIFs (Tenor) ---------------- */
+
+  // Busca de GIFs pelo servidor, com a chave TENOR_API_KEY (sem ela o botão de GIF não aparece)
+  const gifCache = new Map(); // busca -> { at, data }
+  route('GET', '/api/gifs', async ({ query }) => {
+    const key = process.env.TENOR_API_KEY;
+    if (!key) throw new HttpError(404, 'GIFs não configurados.');
+    const q = String(query.get('q') || '').trim().slice(0, 60);
+    const hit = gifCache.get(q);
+    if (hit && now() - hit.at < 10 * 60_000) return hit.data;
+    const params = new URLSearchParams({ key, client_key: 'straighttalk', limit: '30', media_filter: 'tinygif,gif', contentfilter: 'medium', locale: 'pt_BR', country: 'BR' });
+    if (q) params.set('q', q);
+    let r;
+    try {
+      r = await fetch(`${process.env.TENOR_API_BASE || 'https://tenor.googleapis.com'}/v2/${q ? 'search' : 'featured'}?${params}`, { signal: AbortSignal.timeout(8000) });
+    } catch { throw new HttpError(502, 'Não foi possível buscar GIFs agora.'); }
+    if (!r.ok) throw new HttpError(502, 'Não foi possível buscar GIFs agora.');
+    const json = await r.json();
+    const data = {
+      gifs: (json.results || []).map((g) => ({
+        id: g.id, title: g.content_description || '',
+        preview: g.media_formats?.tinygif?.url, url: g.media_formats?.gif?.url,
+        width: g.media_formats?.tinygif?.dims?.[0], height: g.media_formats?.tinygif?.dims?.[1],
+      })).filter((g) => g.preview && g.url && GIF_URL.test(g.url)),
+    };
+    if (gifCache.size > 300) gifCache.clear();
+    gifCache.set(q, { at: now(), data });
+    return data;
+  });
 
   /* ---------------- Mensalidade ---------------- */
 

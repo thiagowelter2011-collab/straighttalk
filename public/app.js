@@ -138,6 +138,7 @@ async function start() {
   $('#paywall').classList.add('hidden');
   S.user = me.user;
   S.media = me.media;
+  $('#btn-gif').classList.toggle('hidden', !me.gifs);
   S.servers = me.servers;
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
@@ -713,7 +714,10 @@ function messageNode(m, prev) {
     body.append(el('div', { className: 'head' }, author, el('span', { className: 'time', textContent: fmtTime(m.createdAt) })));
   }
   if (m.pinnedAt) body.append(el('div', { className: 'pinned-label' }, iconEl('pin', 12), ' Fixada'));
-  if (m.text || m.editedAt) {
+  if (GIF_URL.test(m.text || '')) {
+    const img = el('img', { className: 'gif', src: m.text, alt: 'GIF', loading: 'lazy', referrerPolicy: 'no-referrer' });
+    body.append(el('div', { className: 'gif-wrap' }, img));
+  } else if (m.text || m.editedAt) {
     const text = el('div', { className: 'text' });
     linkify(text, m.text, true);
     if (m.editedAt) text.append(el('span', { className: 'edited', textContent: ' (editado)', title: 'Editado ' + fmtTime(m.editedAt) }));
@@ -878,7 +882,9 @@ function startEdit(m, node) {
   };
 }
 
+const GIF_URL = /^https:\/\/media\d*\.tenor\.com\/[\w\-/.]+\.gif$/;
 function preview(m) {
+  if (GIF_URL.test(m.text || '')) return 'GIF';
   return m.text || (m.file ? `📎 ${m.file.name}` : '');
 }
 
@@ -2295,7 +2301,52 @@ function emoticonify(node, text) {
     box.append(b);
   }
 })();
-$('#btn-emoticons').onclick = (e) => { e.stopPropagation(); $('#emoticons').classList.toggle('hidden'); };
+$('#btn-emoticons').onclick = (e) => { e.stopPropagation(); $('#gif-pop').classList.add('hidden'); $('#emoticons').classList.toggle('hidden'); };
+
+/* GIFs */
+let gifTimer;
+async function loadGifs(q) {
+  const grid = $('#gif-grid');
+  try {
+    const { gifs } = await api('GET', '/api/gifs' + (q ? `?q=${encodeURIComponent(q)}` : ''));
+    if ($('#gif-search').value.trim() !== q) return;
+    grid.replaceChildren(...gifs.map((g) => {
+      const b = el('button', { type: 'button', className: 'gif-opt', title: g.title }, el('img', { src: g.preview, alt: g.title, loading: 'lazy', referrerPolicy: 'no-referrer' }));
+      b.onclick = () => sendGif(g.url);
+      return b;
+    }));
+    if (!gifs.length) grid.append(el('p', { className: 'muted small', textContent: 'Nenhum GIF encontrado.' }));
+  } catch (err) { grid.replaceChildren(el('p', { className: 'muted small', textContent: err.message })); }
+}
+async function sendGif(url) {
+  $('#gif-pop').classList.add('hidden');
+  const conv = currentConv();
+  if (!conv) return;
+  try {
+    const reply = S.reply?.key === conv.key ? S.reply : null;
+    const m = await api('POST', conv.url, { text: url, replyTo: reply?.id });
+    if (reply && S.reply === reply) cancelReply();
+    const list = S.messages.get(conv.key);
+    if (list && !list.some((x) => x.id === m.id)) { list.push(m); if (currentConv()?.key === conv.key) appendMessage(m, conv.key); }
+  } catch (err) { toast(err.message); }
+}
+$('#btn-gif').onclick = (e) => {
+  e.stopPropagation();
+  $('#emoticons').classList.add('hidden');
+  const pop = $('#gif-pop');
+  pop.classList.toggle('hidden');
+  if (!pop.classList.contains('hidden')) {
+    $('#gif-search').value = '';
+    loadGifs('');
+    $('#gif-search').focus();
+  }
+};
+$('#gif-search').addEventListener('input', () => {
+  clearTimeout(gifTimer);
+  gifTimer = setTimeout(() => loadGifs($('#gif-search').value.trim()), 350);
+});
+$('#gif-search').addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#gif-pop').classList.add('hidden'); input.focus(); } if (e.key === 'Enter') e.preventDefault(); });
+document.addEventListener('click', (e) => { if (!e.target.closest('#gif-pop, #btn-gif')) $('#gif-pop').classList.add('hidden'); });
 document.addEventListener('click', (e) => { if (!e.target.closest('#emoticons')) $('#emoticons').classList.add('hidden'); });
 
 $('#btn-nudge').onclick = () => {

@@ -30,3 +30,6 @@ services:
       # Seu nome de usuário no StraightTalk: mostra o "Painel de assinaturas" nas Configurações (só para você)
       - key: ADMIN_USERNAMES
         sync: false
+      # GIFs (opcional): chave da API do Tenor (Google Cloud). Sem ela, o botão de GIF não aparece
+      - key: TENOR_API_KEY
+        sync: false

@@ -554,6 +554,11 @@ test('sem a chave do Mercado Pago, criar conta continua grátis', async () => {
   assert.equal(r.data.billing.locked, false);
 });
 
+test('GIFs: sem TENOR_API_KEY a busca fica desligada', async () => {
+  assert.equal((await call('GET', '/api/gifs?q=gato', null, ana)).status, 404);
+  assert.equal((await call('GET', '/api/me', null, ana)).data.gifs, false);
+});
+
 test('link para baixar o app do Windows', async () => {
   const res = await fetch(base + '/baixar', { redirect: 'manual' });
   assert.equal(res.status, 302);

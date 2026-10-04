@@ -629,3 +629,15 @@ select { cursor: pointer; }
 .side-text { font-size: 13.5px; color: var(--text-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .side-empty { padding: 12px; }
 @media (max-width: 720px) { .search-form input { width: 140px; } }
+
+/* GIFs */
+.gif-wrap { margin-top: 4px; }
+.msg img.gif { max-width: min(320px, 100%); max-height: 260px; border-radius: 12px; display: block; }
+.gif-pop { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 15; width: min(420px, calc(100vw - 32px)); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 16px; padding: 10px; box-shadow: var(--shadow-lg); display: grid; gap: 8px; animation: rise .15s var(--ease); }
+.gif-pop input { height: 36px; padding: 0 12px; border-radius: 10px; }
+.gif-grid { columns: 3 120px; column-gap: 6px; max-height: 340px; overflow-y: auto; }
+.gif-opt { border: 0; padding: 0; margin: 0 0 6px; background: var(--surface-2); border-radius: 10px; overflow: hidden; width: 100%; display: block; break-inside: avoid; }
+.gif-opt img { width: 100%; display: block; }
+.gif-opt:hover { outline: 2px solid var(--accent); }
+.gif-credit { font-size: 11px; text-align: right; }

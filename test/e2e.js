@@ -189,6 +189,9 @@ async function resetFixedAccounts() {
   await bia.waitForSelector('#side-panel:not(.hidden) .side-item >> text=churrasco');
   await bia.screenshot({ path: `${OUT}/v2-busca.png` });
   await bia.click('#side-close');
+  await bia.fill('#chat-input', 'https://media.tenor.com/abcDEF123/AAAAC/gato-dançando.gif'.replace('ç', 'c'));
+  await bia.press('#chat-input', 'Enter');
+  await ana.waitForSelector('.msg img.gif');
   console.log('menção, fixar e buscar ok');
 
   // Imagem e arquivo no chat (o print da tela serve de imagem de teste)
