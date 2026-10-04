@@ -18,6 +18,17 @@ jobs:
         with:
           node-version: 24
       - run: npm install --no-save playwright && npx playwright install --with-deps chromium
+      - name: Esperar o Render publicar este commit
+        env:
+          URL: ${{ inputs.url || vars.STRAIGHTTALK_URL || 'https://straighttalk.onrender.com' }}
+        run: |
+          for i in $(seq 1 60); do
+            v=$(curl -fsS --max-time 60 "$URL/healthz" | jq -r '.version // empty' || true)
+            echo "no ar: ${v:-?}"
+            if [ -z "$v" ] || [ "$v" = "$GITHUB_SHA" ]; then exit 0; fi
+            sleep 15
+          done
+          echo "::warning::O site ainda não está com o commit $GITHUB_SHA; testando a versão no ar"
       - run: mkdir -p prints && node test/e2e.js "$URL" prints
         env:
           URL: ${{ inputs.url || vars.STRAIGHTTALK_URL || 'https://straighttalk.onrender.com' }}

@@ -569,7 +569,7 @@ function createApp({
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
-    if (url.pathname === '/healthz') return json(res, 200, { ok: true });
+    if (url.pathname === '/healthz') return json(res, 200, { ok: true, version: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || null });
     if (!url.pathname.startsWith('/api/')) return serveStatic(req, res, url.pathname);
 
     const r = routes.find((r) => r.method === req.method && r.re.test(url.pathname));
