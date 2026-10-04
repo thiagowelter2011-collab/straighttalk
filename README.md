@@ -1,6 +1,10 @@
 # StraightTalk
 
-Chat de texto, voz e compartilhamento de tela ao mesmo tempo, no estilo Discord e com o mínimo de delay.
+Chat de texto, voz e compartilhamento de tela ao mesmo tempo, com cara de mensageiro clássico e o mínimo de delay.
+
+- **Visual de mensageiro clássico:** lista de contatos com status (Disponível, Ocupado, Ausente, Invisível), mensagem pessoal, "Fulano diz:", emoticons por atalho (`:)`, `(L)`, `(Y)`...), **chamar atenção** que treme a janela e sons de mensagem/contato online
+
+![Conversa](docs/msn-chat.png)
 
 - **Contas** com usuário e senha
 - **Servidores** com convite por link, **canais de texto** (com histórico) e **canais de voz**

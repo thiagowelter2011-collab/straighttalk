@@ -58,6 +58,20 @@ const tag = Date.now().toString(36);
   await ana.waitForSelector('.msg .text >> text=valeu ana');
   console.log('chat ok');
 
+  // Estilo mensageiro: emoticons, mensagem pessoal, status e chamar atenção
+  await bia.fill('#chat-input', 'adorei (L) :)');
+  await bia.click('#btn-send');
+  await ana.waitForSelector('.msg .text .emo >> text=❤️');
+  await ana.fill('#me-pm', 'testando o StraightTalk (Y)');
+  await ana.press('#me-pm', 'Enter');
+  await bia.waitForSelector('.member .pm >> text=testando o StraightTalk');
+  await ana.selectOption('#me-status', 'busy');
+  await bia.waitForSelector('.member .frame[data-status="busy"]');
+  await ana.selectOption('#me-status', 'online');
+  await bia.click('#btn-nudge');
+  await ana.waitForSelector('.nudge-line >> text=Bia chamou a sua atenção!');
+  console.log('emoticons, mensagem pessoal, status e chamar atenção ok');
+
   const caio = await person('Caio');
   await register(caio, `caio${tag}`, 'Caio', invite);
   await caio.waitForSelector('#dlg-form[open]');

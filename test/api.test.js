@@ -194,6 +194,35 @@ test('TURN com credenciais temporárias no modo P2P', () => {
   delete process.env.TURN_SECRET;
 });
 
+test('status, mensagem pessoal e chamar atenção (estilo MSN)', async () => {
+  const a = await socket(ana);
+  const b = await socket(bia);
+  await b.wait((m) => m.type === 'hello');
+  a.ws.send(JSON.stringify({ type: 'status', status: 'busy' }));
+  await b.wait((m) => m.type === 'presence' && m.status === 'busy');
+  a.ws.send(JSON.stringify({ type: 'status', status: 'invisible' }));
+  await b.wait((m) => m.type === 'presence' && m.status === 'offline' && m.online === false);
+  let r = await call('GET', `/api/servers/${serverId}`, null, bia);
+  assert.equal(r.data.members.find((m) => m.displayName === 'Ana').status, 'offline', 'invisível aparece offline');
+  a.ws.send(JSON.stringify({ type: 'status', status: 'online' }));
+  await b.wait((m) => m.type === 'presence' && m.status === 'online');
+
+  r = await call('PATCH', '/api/me', { personalMessage: '  ouvindo   música  ' }, ana);
+  assert.equal(r.status, 200);
+  r = await call('GET', '/api/me', null, ana);
+  assert.equal(r.data.user.personalMessage, 'ouvindo música');
+  assert.equal(r.data.user.displayName, 'Ana', 'mudar só a mensagem pessoal não mexe no nome');
+  r = await call('PATCH', '/api/me', { personalMessage: 'x'.repeat(121) }, ana);
+  assert.equal(r.status, 400);
+
+  a.ws.send(JSON.stringify({ type: 'nudge', channelId: textId }));
+  const n = await b.wait((m) => m.type === 'nudge');
+  assert.equal(n.name, 'Ana');
+  a.ws.send(JSON.stringify({ type: 'nudge', channelId: textId }));
+  await a.wait((m) => m.type === 'nudge-wait');
+  a.ws.close(); b.ws.close();
+});
+
 test('sair e apagar servidor', async () => {
   assert.equal((await call('POST', `/api/servers/${serverId}/leave`, null, ana)).status, 400, 'dono não sai');
   assert.equal((await call('POST', `/api/servers/${serverId}/leave`, null, bia)).status, 200);

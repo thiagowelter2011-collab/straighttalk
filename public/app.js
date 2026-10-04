@@ -1,4 +1,4 @@
-// StraightTalk — cliente (estilo Discord)
+// StraightTalk — cliente (visual de mensageiro clássico: contatos com status, "diz:", chamar atenção)
 // Contas, servidores, canais de texto e de voz, compartilhamento de tela.
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -33,6 +33,7 @@ const S = {
   volumes: JSON.parse(localGet('st-volumes') || '{}'), // userId -> 0..1
   settings: JSON.parse(localGet('st-settings') || '{}'),
   typing: new Map(),            // channelId -> Map(userId -> {name, until})
+  status: localGet('st-status') || 'online', // online | away | busy | invisible
 };
 
 /* ================= API ================= */
@@ -54,6 +55,7 @@ async function api(method, path, body) {
 let registering = false;
 
 function showAuth() {
+  $('#auth-status').value = S.status;
   $('#app').classList.add('hidden');
   $('#auth').classList.remove('hidden');
   $('#auth-user').focus();
@@ -80,6 +82,8 @@ $('#auth-form').addEventListener('submit', async (e) => {
   try {
     const body = { username: $('#auth-user').value, password: $('#auth-pass').value, displayName: $('#auth-display').value };
     const { token } = await api('POST', registering ? '/api/register' : '/api/login', body);
+    S.status = $('#auth-status').value;
+    localSet('st-status', S.status);
     S.token = token;
     localSet('st-token', token);
     $('#auth-pass').value = '';
@@ -217,7 +221,7 @@ let wsRetry = 0;
 
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(S.token)}`);
+  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(S.token)}&status=${S.status}`);
   S.ws = ws;
   setStatus('conectando…');
 
@@ -245,6 +249,7 @@ async function onWs(msg) {
     case 'hello': {
       const reconnecting = !!S.voice;
       S.connId = msg.connId;
+      wsSend({ type: 'status', status: S.status });
       if (reconnecting) {
         // Reconectou: entra de novo no canal de voz em que estava
         const ch = S.voice.channelId;
@@ -260,6 +265,9 @@ async function onWs(msg) {
       if (list && !list.some((x) => x.id === m.id)) list.push(m);
       clearTyping(m.channelId, m.userId);
       const visible = S.view === 'text' && S.serverId === msg.serverId && S.textChannel[S.serverId] === m.channelId;
+      if (m.userId !== S.user.id) {
+        if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${m.text}`); }
+      }
       if (visible) appendMessage(m);
       else if (m.userId !== S.user.id) {
         S.unread.add(m.channelId);
@@ -293,8 +301,35 @@ async function onWs(msg) {
     case 'presence':
       if (S.detail && msg.serverId === S.serverId) {
         const m = S.detail.members.find((x) => x.id === msg.userId);
-        if (m) { m.online = msg.online; renderMembers(); }
+        if (m) {
+          const cameOnline = !m.online && msg.online;
+          m.online = msg.online;
+          m.status = msg.status || (msg.online ? 'online' : 'offline');
+          renderMembers();
+          if (cameOnline && m.id !== S.user.id) { Sounds.play('online'); toast(`${m.displayName} acabou de entrar.`); }
+        }
       }
+      break;
+    case 'nudge': {
+      const mine = msg.userId === S.user.id;
+      const visible = S.view === 'text' && S.serverId === msg.serverId && S.textChannel[S.serverId] === msg.channelId;
+      if (visible) {
+        const box = $('#messages');
+        box.append(el('div', { className: 'msg system nudge-line', textContent: mine ? 'Você chamou a atenção de todos.' : `${msg.name} chamou a sua atenção!` }));
+        box.scrollTop = box.scrollHeight;
+      } else if (!mine) toast(`${msg.name} chamou a sua atenção!`);
+      if (!mine) {
+        Sounds.play('nudge');
+        flashTitle(`${msg.name} chamou a sua atenção!`);
+        const app = $('#app');
+        app.classList.remove('nudge');
+        void app.offsetWidth;
+        app.classList.add('nudge');
+      }
+      break;
+    }
+    case 'nudge-wait':
+      toast('Espere alguns segundos para chamar atenção de novo.');
       break;
     case 'server-update':
       if (msg.serverId === S.serverId) await reloadDetail();
@@ -409,7 +444,7 @@ function messageNode(m, prev) {
     body.append(el('div', { className: 'head' }, author, el('span', { className: 'time', textContent: fmtTime(m.createdAt) })));
   }
   const text = el('div', { className: 'text' });
-  linkify(text, m.text);
+  linkify(text, m.text, true);
   if (!first) text.title = fmtTime(m.createdAt);
   body.append(text);
   node.append(avatar, body);
@@ -654,6 +689,9 @@ function renderAll() {
 function renderMe() {
   $('#me-name').textContent = S.user.displayName;
   $('#me-name').title = '@' + S.user.username;
+  $('#me-frame').dataset.status = S.status === 'invisible' ? 'offline' : S.status;
+  $('#me-status').value = S.status;
+  if (document.activeElement !== $('#me-pm')) $('#me-pm').value = S.user.personalMessage || '';
   paintAvatar($('#me-avatar'), S.user.displayName);
   $('#me-avatar').dataset.media = S.voice?.mediaId || '';
 }
@@ -880,12 +918,20 @@ function renderMembers() {
   const off = S.detail.members.filter((m) => !m.online);
   for (const [label, list, online] of [['Online', on, true], ['Offline', off, false]]) {
     if (!list.length) continue;
-    box.append(el('div', { className: 'member-group', textContent: `${label} — ${list.length}` }));
+    box.append(el('div', { className: 'member-group', textContent: `${label} (${list.length})` }));
     for (const m of list) {
+      const status = online ? (m.status || 'online') : 'offline';
       const av = el('div', { className: 'avatar' });
       paintAvatar(av, m.displayName);
-      const row = el('div', { className: 'member' + (online ? ' online' : ''), title: '@' + m.username },
-        av, el('span', { className: 'name', textContent: m.displayName }),
+      const frame = el('div', { className: 'frame' }, av);
+      frame.dataset.status = status;
+      const who = el('div', { className: 'who' }, el('span', { className: 'name', textContent: m.displayName + (online && status !== 'online' ? ` (${STATUS_LABEL[status]})` : '') }));
+      if (m.personalMessage) {
+        const pm = el('span', { className: 'pm' });
+        linkify(pm, m.personalMessage, true);
+        who.append(pm);
+      }
+      const row = el('div', { className: 'member' + (online ? ' online' : ''), title: '@' + m.username }, frame, who,
         m.id === S.detail.server.ownerId ? el('span', { className: 'crown', title: 'Dono', textContent: '👑' }) : null);
       box.append(row);
     }
@@ -967,6 +1013,8 @@ $('#btn-join-server').onclick = async () => {
 $('#btn-server-menu').onclick = (e) => {
   e.stopPropagation();
   const menu = $('#server-menu');
+  const header = $('.server-header');
+  menu.style.top = header.offsetTop + header.offsetHeight + 2 + 'px';
   menu.classList.toggle('hidden');
   menu.querySelectorAll('.owner-only').forEach((b) => b.classList.toggle('hidden', !isOwner()));
   menu.querySelectorAll('.member-only').forEach((b) => b.classList.toggle('hidden', isOwner()));
@@ -1043,6 +1091,7 @@ async function showInvite(s) {
 $('#btn-settings').onclick = async () => {
   $('#set-name').value = S.user.displayName;
   $('#set-noise').checked = S.settings.noiseSuppression !== false;
+  $('#set-sounds').checked = S.settings.sounds !== false;
   $('#set-media').textContent = S.media.mode === 'livekit'
     ? 'Voz e tela via servidor de mídia (SFU), com TURN para redes fechadas.'
     : 'Voz e tela direto entre as pessoas (P2P)' + (S.media.iceServers.length > 1 ? ', com TURN para redes fechadas.' : '.');
@@ -1082,11 +1131,17 @@ $('#dlg-settings').addEventListener('close', async () => {
   S.settings.micId = $('#set-mic').value || undefined;
   S.settings.speakerId = $('#set-speaker').value || undefined;
   S.settings.noiseSuppression = $('#set-noise').checked;
+  S.settings.sounds = $('#set-sounds').checked;
   localSet('st-settings', JSON.stringify(S.settings));
   S.voice?.engine.setSpeaker?.(S.settings.speakerId);
   const name = $('#set-name').value.trim();
   if (name && name !== S.user.displayName) {
-    try { await api('PATCH', '/api/me', { displayName: name }); await refreshServers(); } catch (err) { toast(err.message); }
+    try {
+      await api('PATCH', '/api/me', { displayName: name });
+      S.user.displayName = name;
+      renderMe();
+      await refreshServers();
+    } catch (err) { toast(err.message); }
   }
   if (micChanged && S.voice) {
     const ch = S.voice.channelId;
@@ -1168,6 +1223,128 @@ function formDialog({ title, text, fields = [], okText = 'OK', danger = false, o
   });
 }
 
+/* ================= Status, mensagem pessoal, emoticons e chamar atenção ================= */
+
+const STATUS_LABEL = { online: 'Disponível', busy: 'Ocupado', away: 'Ausente', invisible: 'Invisível', offline: 'Offline' };
+
+$('#me-status').onchange = () => {
+  S.status = $('#me-status').value;
+  localSet('st-status', S.status);
+  wsSend({ type: 'status', status: S.status });
+  renderMe();
+};
+
+async function savePersonalMessage() {
+  const pm = $('#me-pm').value.trim();
+  if (pm === (S.user.personalMessage || '')) return;
+  try {
+    await api('PATCH', '/api/me', { personalMessage: pm });
+    S.user.personalMessage = pm;
+  } catch (err) {
+    toast(err.message);
+    $('#me-pm').value = S.user.personalMessage || '';
+  }
+}
+$('#me-pm').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('#me-pm').blur(); }
+  if (e.key === 'Escape') { $('#me-pm').value = S.user.personalMessage || ''; $('#me-pm').blur(); }
+});
+$('#me-pm').addEventListener('blur', savePersonalMessage);
+
+// Atalhos de texto que viram emoticons, como nos mensageiros antigos
+const EMOTICONS = [
+  [':)', '🙂'], [':-)', '🙂'], [':D', '😃'], [':-D', '😃'], [';)', '😉'], [';-)', '😉'], [':(', '🙁'], [':-(', '🙁'],
+  [':P', '😛'], [':-P', '😛'], [':p', '😛'], [':O', '😮'], [':o', '😮'], [":'(", '😢'], [':@', '😠'], [':S', '😕'], [':s', '😕'],
+  [':$', '😳'], [':|', '😐'], ['(H)', '😎'], ['(h)', '😎'], ['(A)', '😇'], ['(a)', '😇'], ['(6)', '😈'],
+  ['(L)', '❤️'], ['(l)', '❤️'], ['(U)', '💔'], ['(u)', '💔'], ['(Y)', '👍'], ['(y)', '👍'], ['(N)', '👎'], ['(n)', '👎'],
+  ['(K)', '💋'], ['(k)', '💋'], ['(F)', '🌹'], ['(f)', '🌹'], ['(*)', '⭐'], ['(C)', '☕'], ['(c)', '☕'], ['(B)', '🍺'], ['(b)', '🍺'],
+  ['(^)', '🎂'], ['(G)', '🎁'], ['(g)', '🎁'], ['(8)', '🎵'], ['(I)', '💡'], ['(i)', '💡'], ['(mp)', '📱'], ['(co)', '💻'],
+  ['(S)', '🌙'], ['(#)', '☀️'], ['(R)', '🌈'], ['(r)', '🌈'], ['(Z)', '👦'], ['(X)', '👧'], ['(@)', '🐱'], ['(&)', '🐶'],
+  ['(sn)', '🐌'], ['(tu)', '🐢'], ['(pi)', '🍕'], ['(so)', '⚽'], ['(ap)', '✈️'], ['(e)', '📧'], ['(o)', '⏰'], ['+o(', '🤢'],
+];
+const EMO_RE = new RegExp(EMOTICONS.map(([k]) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length).join('|'), 'g');
+const EMO_MAP = new Map(EMOTICONS);
+
+function emoticonify(node, text) {
+  let last = 0;
+  for (const m of text.matchAll(EMO_RE)) {
+    if (m.index > last) node.append(document.createTextNode(text.slice(last, m.index)));
+    node.append(el('span', { className: 'emo', textContent: EMO_MAP.get(m[0]), title: m[0] }));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) node.append(document.createTextNode(text.slice(last)));
+}
+
+// Painel de emoticons: um de cada (o atalho principal)
+(() => {
+  const box = $('#emoticons');
+  const seen = new Set();
+  for (const [code, emo] of EMOTICONS) {
+    if (seen.has(emo)) continue;
+    seen.add(emo);
+    const b = el('button', { type: 'button', textContent: emo, title: code });
+    b.onclick = () => {
+      const i = input.selectionStart ?? input.value.length;
+      const pad = i > 0 && !/\s$/.test(input.value.slice(0, i)) ? ' ' : '';
+      input.setRangeText(pad + code + ' ', i, input.selectionEnd ?? i, 'end');
+      box.classList.add('hidden');
+      input.focus();
+      input.dispatchEvent(new Event('input'));
+    };
+    box.append(b);
+  }
+})();
+$('#btn-emoticons').onclick = (e) => { e.stopPropagation(); $('#emoticons').classList.toggle('hidden'); };
+document.addEventListener('click', (e) => { if (!e.target.closest('#emoticons')) $('#emoticons').classList.add('hidden'); });
+
+$('#btn-nudge').onclick = () => {
+  const ch = currentChannel();
+  if (ch) wsSend({ type: 'nudge', channelId: ch.id });
+};
+
+// Sons feitos na hora (sem arquivos): mensagem nova, contato online, chamar atenção
+const Sounds = (() => {
+  let ctx = null;
+  const unlock = () => { try { ctx ||= new AudioContext(); if (ctx.state === 'suspended') ctx.resume(); } catch {} };
+  addEventListener('pointerdown', unlock, { once: false, passive: true });
+  addEventListener('keydown', unlock, { passive: true });
+  function tone(freq, start, dur, type = 'sine', vol = 0.18) {
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(freq, ctx.currentTime + start);
+    g.gain.setValueAtTime(0, ctx.currentTime + start);
+    g.gain.linearRampToValueAtTime(vol, ctx.currentTime + start + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + start + dur);
+    o.connect(g).connect(ctx.destination);
+    o.start(ctx.currentTime + start);
+    o.stop(ctx.currentTime + start + dur + 0.05);
+  }
+  const SOUNDS = {
+    message: () => { tone(1046.5, 0, 0.18); tone(1318.5, 0.09, 0.32); },
+    online: () => { tone(659.3, 0, 0.2, 'triangle'); tone(784, 0.1, 0.2, 'triangle'); tone(1046.5, 0.2, 0.4, 'triangle'); },
+    nudge: () => { for (let i = 0; i < 8; i++) tone(i % 2 ? 140 : 110, i * 0.07, 0.09, 'square', 0.08); },
+  };
+  return {
+    play(name) {
+      if (S.settings.sounds === false || !ctx || ctx.state !== 'running') return;
+      try { SOUNDS[name](); } catch {}
+    },
+  };
+})();
+
+// Título da aba pisca com a mensagem enquanto a janela não está em foco
+let titleTimer = null;
+function flashTitle(text) {
+  if (!document.hidden) return;
+  clearInterval(titleTimer);
+  let on = false;
+  titleTimer = setInterval(() => { document.title = (on = !on) ? text.slice(0, 60) : 'StraightTalk'; }, 1000);
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { clearInterval(titleTimer); titleTimer = null; document.title = 'StraightTalk'; }
+});
+
 /* ================= Utilidades ================= */
 
 function hue(name) {
@@ -1192,9 +1369,10 @@ function fmtTime(ts) {
   if (d.toDateString() === y.toDateString()) return `Ontem às ${hm}`;
   return `${d.toLocaleDateString('pt-BR')} ${hm}`;
 }
-function linkify(node, text) {
+function linkify(node, text, emoticons = false) {
   for (const part of text.split(/(https?:\/\/[^\s]+)/g)) {
     if (/^https?:\/\//.test(part)) node.append(el('a', { href: part, textContent: part, target: '_blank', rel: 'noopener noreferrer' }));
+    else if (part && emoticons) emoticonify(node, part);
     else if (part) node.append(document.createTextNode(part));
   }
 }

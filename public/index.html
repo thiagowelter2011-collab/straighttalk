@@ -11,7 +11,21 @@
   <!-- ============ Login / cadastro ============ -->
   <div id="auth" class="auth hidden">
     <form id="auth-form" class="auth-card" novalidate>
-      <h1>🎧 StraightTalk</h1>
+      <div class="auth-logo">
+        <div class="frame"><div class="pic">
+            <svg width="70" height="70" viewBox="0 0 64 64" aria-hidden="true">
+              <defs>
+                <radialGradient id="g1" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#b9f5a8"/><stop offset=".55" stop-color="#4fbf3f"/><stop offset="1" stop-color="#2a8a25"/></radialGradient>
+                <radialGradient id="g2" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#bfe3ff"/><stop offset=".55" stop-color="#3c9be8"/><stop offset="1" stop-color="#1c63b8"/></radialGradient>
+              </defs>
+              <circle cx="40" cy="17" r="10" fill="url(#g2)"/>
+              <path d="M24 52c0-11 7-19 16-19s16 8 16 19c0 2-2 3-4 3H28c-2 0-4-1-4-3z" fill="url(#g2)"/>
+              <circle cx="23" cy="22" r="11" fill="url(#g1)"/>
+              <path d="M5 58c0-12 8-21 18-21s18 9 18 21c0 2-2 4-4 4H9c-2 0-4-2-4-4z" fill="url(#g1)"/>
+            </svg>
+        </div></div>
+        <h1><b>Straight</b>Talk</h1>
+      </div>
       <p id="auth-sub" class="muted">Que bom te ver de novo!</p>
       <label id="field-display" class="hidden">Nome de exibição
         <input id="auth-display" maxlength="32" autocomplete="nickname" placeholder="Ex.: Welter Hawk">
@@ -21,6 +35,14 @@
       </label>
       <label>Senha
         <input id="auth-pass" type="password" minlength="6" autocomplete="current-password" required>
+      </label>
+      <label class="auth-status">Entrar como:
+        <select id="auth-status">
+          <option value="online">🟢 Disponível</option>
+          <option value="busy">🔴 Ocupado</option>
+          <option value="away">🟠 Ausente</option>
+          <option value="invisible">⚪ Invisível</option>
+        </select>
       </label>
       <button type="submit" class="btn primary" id="auth-submit">Entrar</button>
       <p id="auth-error" class="error" role="alert"></p>
@@ -75,9 +97,18 @@
 
       <footer class="user-panel">
         <div class="me">
-          <div id="me-avatar" class="avatar"></div>
+          <div class="frame" id="me-frame"><div id="me-avatar" class="avatar"></div></div>
           <div class="me-text">
-            <div id="me-name" class="me-name"></div>
+            <div class="me-line">
+              <span id="me-name" class="me-name"></span>
+              <select id="me-status" class="me-status-select" title="Mudar status">
+                <option value="online">(Disponível)</option>
+                <option value="busy">(Ocupado)</option>
+                <option value="away">(Ausente)</option>
+                <option value="invisible">(Invisível)</option>
+              </select>
+            </div>
+            <input id="me-pm" class="me-pm" maxlength="120" placeholder="&lt;Digite uma mensagem pessoal&gt;" spellcheck="false">
             <div id="conn-status" class="me-status">conectando…</div>
           </div>
         </div>
@@ -108,7 +139,13 @@
         <div id="messages" class="messages"></div>
         <div id="typing" class="typing"></div>
         <form id="chat-form" class="chat-form">
-          <textarea id="chat-input" rows="1" maxlength="4000" placeholder="Conversar" autocomplete="off"></textarea>
+          <div class="chat-tools">
+            <button type="button" id="btn-emoticons" class="icon-btn" title="Emoticons">😊<span>Emoticons</span></button>
+            <button type="button" id="btn-nudge" class="icon-btn" title="Chamar a atenção de todos na conversa">📳<span>Chamar atenção</span></button>
+          </div>
+          <div id="emoticons" class="emoticons hidden"></div>
+          <textarea id="chat-input" rows="2" maxlength="4000" placeholder="Digite sua mensagem aqui" autocomplete="off"></textarea>
+          <button type="submit" id="btn-send" class="btn">Enviar</button>
         </form>
       </section>
 
@@ -125,6 +162,7 @@
 
     <!-- Membros -->
     <aside id="members" class="members">
+      <div class="members-title">👥 Contatos</div>
       <div id="members-list"></div>
     </aside>
   </div>
@@ -169,6 +207,7 @@
         <select id="set-speaker"></select>
       </label>
       <label class="radio"><input type="checkbox" id="set-noise"> Supressão de ruído</label>
+      <label class="radio"><input type="checkbox" id="set-sounds"> Sons de mensagem, contato online e chamar atenção</label>
       <p class="muted small" id="set-media"></p>
       <menu>
         <button value="logout" class="btn danger" formnovalidate>Sair da conta</button>

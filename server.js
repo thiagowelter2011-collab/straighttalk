@@ -59,7 +59,7 @@ function createApp({
 
   async function userFromToken(token) {
     if (!token) return null;
-    return (await db.get(`SELECT u.id, u.username, u.display_name AS displayName
+    return (await db.get(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage
               FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?`, String(token))) || null;
   }
 
@@ -110,10 +110,10 @@ function createApp({
   async function serverDetail(serverId, viewerId) {
     const s = await serverRow(serverId);
     const channels = await db.all('SELECT id, name, type, position FROM channels WHERE server_id = ? ORDER BY type DESC, position, id', serverId);
-    const members = (await db.all(`SELECT u.id, u.username, u.display_name AS displayName
+    const members = (await db.all(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage
                        FROM members m JOIN users u ON u.id = m.user_id
                        WHERE m.server_id = ? ORDER BY u.display_name COLLATE NOCASE`, serverId))
-      .map((m) => ({ ...m, online: onlineUsers.has(m.id) }));
+      .map((m) => ({ ...m, status: visibleStatus(m.id), online: visibleStatus(m.id) !== 'offline' }));
     if (s.ownerId !== viewerId) delete s.inviteCode;
     return { server: s, channels, members, voice: voiceSnapshot(serverId) };
   }
@@ -153,6 +153,24 @@ function createApp({
 
   const conns = new Map();        // connId -> { id, user, ws, voice }
   const onlineUsers = new Map();  // userId -> número de conexões
+  const userStatus = new Map();   // userId -> online | away | busy | invisible (escolhido pela pessoa)
+  const STATUSES = new Set(['online', 'away', 'busy', 'invisible']);
+  const lastNudge = new Map();    // userId -> quando chamou atenção pela última vez
+
+  // O que os outros veem: invisível aparece como offline
+  function visibleStatus(userId) {
+    if (!onlineUsers.has(userId)) return 'offline';
+    const s = userStatus.get(userId) || 'online';
+    return s === 'invisible' ? 'offline' : s;
+  }
+
+  async function announcePresence(userId, before) {
+    const status = visibleStatus(userId);
+    if (status === before) return;
+    for (const serverId of await serverIdsOf(userId)) {
+      toServer(serverId, { type: 'presence', serverId, userId, online: status !== 'offline', status });
+    }
+  }
 
   function send(conn, msg) {
     if (conn.ws.readyState === conn.ws.OPEN) conn.ws.send(JSON.stringify(msg));
@@ -219,12 +237,10 @@ function createApp({
   }
 
   async function updatePresence(userId, delta) {
-    const before = onlineUsers.get(userId) || 0;
-    const after = before + delta;
-    if (after <= 0) onlineUsers.delete(userId); else onlineUsers.set(userId, after);
-    if ((before === 0) !== (after <= 0)) {
-      for (const serverId of await serverIdsOf(userId)) toServer(serverId, { type: 'presence', serverId, userId, online: after > 0 });
-    }
+    const before = visibleStatus(userId);
+    const after = (onlineUsers.get(userId) || 0) + delta;
+    if (after <= 0) { onlineUsers.delete(userId); userStatus.delete(userId); } else onlineUsers.set(userId, after);
+    await announcePresence(userId, before);
   }
 
   function kickFromServer(serverId, userId) {
@@ -268,6 +284,23 @@ function createApp({
         if (target && conn.voice && target.voice?.channelId === conn.voice.channelId) {
           send(target, { type: 'signal', from: conn.id, data: msg.data });
         }
+        break;
+      }
+      case 'status': {
+        if (!STATUSES.has(msg.status)) return;
+        const before = visibleStatus(conn.user.id);
+        userStatus.set(conn.user.id, msg.status);
+        await announcePresence(conn.user.id, before);
+        break;
+      }
+      case 'nudge': {
+        // "Chamar atenção": treme a janela de quem está no servidor
+        const ch = await channelRow(Number(msg.channelId));
+        if (!ch || ch.type !== 'text' || !(await isMember(ch.serverId, conn.user.id))) return;
+        const t = now();
+        if (t - (lastNudge.get(conn.user.id) || 0) < 8000) return send(conn, { type: 'nudge-wait' });
+        lastNudge.set(conn.user.id, t);
+        toServer(ch.serverId, { type: 'nudge', serverId: ch.serverId, channelId: ch.id, userId: conn.user.id, name: conn.user.displayName });
         break;
       }
       case 'typing': {
@@ -335,8 +368,16 @@ function createApp({
   }));
 
   route('PATCH', '/api/me', async ({ user, body }) => {
-    const displayName = cleanName(body.displayName, 32, 'Nome');
-    await db.run('UPDATE users SET display_name = ? WHERE id = ?', displayName, user.id);
+    if ('displayName' in body) {
+      const displayName = cleanName(body.displayName, 32, 'Nome');
+      await db.run('UPDATE users SET display_name = ? WHERE id = ?', displayName, user.id);
+      for (const c of conns.values()) if (c.user.id === user.id) c.user.displayName = displayName;
+    }
+    if ('personalMessage' in body) {
+      const pm = String(body.personalMessage ?? '').trim().replace(/\s+/g, ' ');
+      if (pm.length > 120) throw new HttpError(400, 'A mensagem pessoal pode ter no máximo 120 caracteres.');
+      await db.run('UPDATE users SET personal_message = ? WHERE id = ?', pm, user.id);
+    }
     for (const sid of await serverIdsOf(user.id)) toServer(sid, { type: 'server-update', serverId: sid });
     return { ok: true };
   });
@@ -567,6 +608,9 @@ function createApp({
 
     const conn = { id: crypto.randomUUID(), user, ws, voice: null, alive: true };
     conns.set(conn.id, conn);
+    // Quem entra como invisível não aparece online nem por um instante
+    const initial = url.searchParams.get('status');
+    if (STATUSES.has(initial) && !onlineUsers.has(user.id)) userStatus.set(user.id, initial);
     setPresence(user.id, +1);
     send(conn, { type: 'hello', connId: conn.id });
 
