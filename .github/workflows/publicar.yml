@@ -1,0 +1,23 @@
+name: Publicar no Render
+
+# Garante a publicação a cada push na main, mesmo se o Render não receber o aviso do GitHub.
+# Precisa do segredo RENDER_DEPLOY_HOOK (Render > serviço > Settings > Deploy Hook).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar o Deploy Hook do Render
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::warning::Segredo RENDER_DEPLOY_HOOK não configurado; nada a fazer."
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK" > /dev/null
+          echo "Render avisado para publicar o commit $GITHUB_SHA."
