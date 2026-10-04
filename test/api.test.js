@@ -94,7 +94,7 @@ test('convite: Bia entra e recebe mensagens em tempo real', async () => {
   assert.equal(j.data.serverId, serverId);
   const d = await call('GET', `/api/servers/${serverId}`, null, bia);
   assert.equal(d.data.members.length, 2);
-  assert.equal(d.data.server.inviteCode, undefined, 'só o dono vê o convite');
+  assert.equal(d.data.server.inviteCode, invite, 'qualquer membro pode convidar (só o dono gera link novo)');
 
   const sb = await socket(bia);
   await sb.wait((m) => m.type === 'hello');

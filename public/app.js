@@ -718,6 +718,7 @@ function isOwner() {
 function renderChannels() {
   $('#server-name').textContent = S.detail?.server.name || 'StraightTalk';
   $('#btn-server-menu').classList.toggle('hidden', !S.detail);
+  $('#btn-invite').classList.toggle('hidden', !S.detail);
   const textUl = $('#text-channels');
   const voiceUl = $('#voice-channels');
   textUl.innerHTML = '';
@@ -1013,6 +1014,8 @@ $('#btn-join-server').onclick = async () => {
   if (code) acceptInvite(code);
 };
 
+$('#btn-invite').onclick = () => { if (S.detail) showInvite(S.detail.server); };
+
 $('#btn-server-menu').onclick = (e) => {
   e.stopPropagation();
   const menu = $('#server-menu');
@@ -1079,7 +1082,7 @@ async function showInvite(s) {
     text: 'Mande este link. Quem abrir cria uma conta (ou entra) e já cai no servidor.',
     fields: [{ name: 'link', label: 'Link de convite', value: link, readonly: true, copy: true }],
     okText: 'Pronto',
-    extra: { label: 'Gerar novo link', danger: false },
+    extra: s.ownerId === S.user.id ? { label: 'Gerar novo link', danger: false } : undefined,
   });
   if (r?.extra) {
     const { inviteCode } = await api('POST', `/api/servers/${s.id}/invite`);

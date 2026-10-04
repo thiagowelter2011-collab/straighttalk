@@ -180,6 +180,7 @@ input:focus, select:focus, textarea:focus { border-color: #3c8ee0; box-shadow: 0
   padding: 0 6px 0 12px; height: 34px; font-weight: 700; color: var(--title); flex: none;
   background: var(--titlebar); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft);
 }
+.invite-btn { margin-left: auto; padding: 1px 8px; font-weight: 400; white-space: nowrap; flex: none; }
 #server-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu {
   position: absolute; top: 132px; left: 8px; right: 8px; z-index: 10;

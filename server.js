@@ -115,7 +115,6 @@ function createApp({
                        FROM members m JOIN users u ON u.id = m.user_id
                        WHERE m.server_id = ? ORDER BY u.display_name COLLATE NOCASE`, serverId))
       .map((m) => ({ ...m, status: visibleStatus(m.id), online: visibleStatus(m.id) !== 'offline' }));
-    if (s.ownerId !== viewerId) delete s.inviteCode;
     return { server: s, channels, members, voice: voiceSnapshot(serverId) };
   }
 
