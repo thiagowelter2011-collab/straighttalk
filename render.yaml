@@ -27,3 +27,6 @@ services:
         sync: false
       - key: MONTHLY_PRICE
         value: "10"
+      # Seu nome de usuário no StraightTalk: mostra o "Painel de assinaturas" nas Configurações (só para você)
+      - key: ADMIN_USERNAMES
+        sync: false

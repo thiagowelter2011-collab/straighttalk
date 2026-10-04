@@ -232,6 +232,17 @@
     </form>
   </dialog>
 
+  <dialog id="dlg-admin" class="dialog dialog-wide">
+    <form method="dialog">
+      <h2>Assinaturas</h2>
+      <p id="adm-sub" class="muted small"></p>
+      <div id="adm-cards" class="adm-cards"></div>
+      <h3 class="adm-h">Últimos pagamentos</h3>
+      <div id="adm-list" class="adm-list"></div>
+      <menu><button value="close" class="btn primary">Fechar</button></menu>
+    </form>
+  </dialog>
+
   <dialog id="dlg-settings" class="dialog">
     <form method="dialog">
       <h2>Configurações</h2>
@@ -269,6 +280,7 @@
         <span id="set-billing-text"></span>
         <button type="button" class="btn small primary" id="set-billing-pay">Pagar mais 30 dias</button>
       </div>
+      <button type="button" class="btn small hidden" id="set-admin" data-icon="users" data-icon-size="15">Painel de assinaturas</button>
       <label class="radio"><input type="checkbox" id="set-notify"> Avisos na área de trabalho quando chegar mensagem com a janela minimizada</label>
       <label class="radio"><input type="checkbox" id="set-sounds"> Sons de mensagem, contato online e chamar atenção</label>
       <p class="muted small" id="set-media"></p>

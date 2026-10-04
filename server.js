@@ -568,8 +568,12 @@ function createApp({
     return { ok: true };
   }, { unpaid: true });
 
+  // Dono do site: nomes de usuário em ADMIN_USERNAMES (separados por vírgula) veem o painel de assinaturas
+  const ADMINS = new Set(String(process.env.ADMIN_USERNAMES || '').toLowerCase().split(',').map((s) => s.trim().replace(/^@/, '')).filter(Boolean));
+  const isAdmin = (user) => ADMINS.has(user.username);
+
   route('GET', '/api/me', async ({ user }) => {
-    const billing = billingInfo(user);
+    const billing = { ...billingInfo(user), admin: isAdmin(user) };
     if (billing.locked) return { user, billing, servers: [] };
     return { user, billing, servers: await listServers(user.id), media: media.clientConfig(user.id) };
   }, { unpaid: true });
@@ -584,6 +588,32 @@ function createApp({
       console.error(err);
       throw new HttpError(502, 'Não foi possível abrir o pagamento agora. Tente de novo em instantes.');
     }
+  }, { unpaid: true });
+
+  // Painel de assinaturas: quantas contas pagam, quanto entrou e os últimos pagamentos
+  route('GET', '/api/admin/billing', async ({ user }) => {
+    if (!isAdmin(user)) throw new HttpError(404, 'Rota não encontrada.');
+    const t = now();
+    const d = new Date(t);
+    const monthStart = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+    const one = async (sql, ...args) => Number(Object.values(await db.get(sql, ...args))[0]) || 0;
+    const counts = {
+      users: await one('SELECT COUNT(*) FROM users'),
+      free: await one('SELECT COUNT(*) FROM users WHERE must_pay = 0'),
+      active: await one('SELECT COUNT(*) FROM users WHERE must_pay = 1 AND paid_until > ?', t),
+      expired: await one('SELECT COUNT(*) FROM users WHERE must_pay = 1 AND paid_until IS NOT NULL AND paid_until <= ?', t),
+      neverPaid: await one('SELECT COUNT(*) FROM users WHERE must_pay = 1 AND paid_until IS NULL'),
+    };
+    const revenue = {
+      month: await one('SELECT COALESCE(SUM(amount), 0) FROM payments WHERE created_at >= ?', monthStart),
+      monthCount: await one('SELECT COUNT(*) FROM payments WHERE created_at >= ?', monthStart),
+      total: await one('SELECT COALESCE(SUM(amount), 0) FROM payments'),
+      totalCount: await one('SELECT COUNT(*) FROM payments'),
+    };
+    const recent = (await db.all(`SELECT p.amount, p.created_at AS createdAt, u.username, u.display_name AS displayName, u.paid_until AS paidUntil
+      FROM payments p JOIN users u ON u.id = p.user_id ORDER BY p.created_at DESC LIMIT 50`))
+      .map((r) => ({ ...r, amount: Number(r.amount), createdAt: Number(r.createdAt), paidUntil: r.paidUntil ? Number(r.paidUntil) : null }));
+    return { enabled: payments.enabled, price: payments.price, counts, revenue, payments: recent };
   }, { unpaid: true });
 
   // "Já paguei": procura no Mercado Pago pagamentos aprovados que ainda não foram contados

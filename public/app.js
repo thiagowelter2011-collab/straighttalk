@@ -251,6 +251,7 @@ window.addEventListener('focus', () => { if (payPoll || !$('#paywall').classList
 // Nas configurações: até quando está pago, e aviso quando faltam poucos dias
 function renderBilling() {
   const b = S.billing || {};
+  $('#set-admin').classList.toggle('hidden', !b.admin);
   const show = b.enabled && b.mustPay;
   $('#set-billing').classList.toggle('hidden', !show);
   if (!show) return;
@@ -263,6 +264,36 @@ $('#set-billing-pay').onclick = async () => {
     toast('Abrimos o Mercado Pago. Os 30 dias novos somam aos que você já tem.');
     watchPayment();
   } catch (err) { toast(err.message); }
+};
+
+// Painel do dono: assinantes e recebimentos
+$('#set-admin').onclick = async () => {
+  let d;
+  try { d = await api('GET', '/api/admin/billing'); } catch (err) { return toast(err.message); }
+  $('#adm-sub').textContent = d.enabled
+    ? `Mensalidade de ${money(d.price)} ligada. Contas criadas antes da cobrança são grátis.`
+    : 'A cobrança está desligada (falta MP_ACCESS_TOKEN no Render).';
+  const card = (n, label, cls = '') => el('div', { className: 'adm-card ' + cls }, el('b', { textContent: n }), el('span', { textContent: label }));
+  $('#adm-cards').replaceChildren(
+    card(d.counts.active, 'assinantes em dia', 'good'),
+    card(money(d.revenue.month), `recebido este mês (${d.revenue.monthCount})`, 'good'),
+    card(money(d.revenue.total), `recebido no total (${d.revenue.totalCount})`),
+    card(d.counts.expired, 'com mensalidade vencida', d.counts.expired ? 'warn' : ''),
+    card(d.counts.neverPaid, 'criaram conta e não pagaram'),
+    card(d.counts.free, `contas grátis (de ${d.counts.users})`),
+  );
+  const list = $('#adm-list');
+  list.innerHTML = '';
+  if (!d.payments.length) list.append(el('p', { className: 'muted small', textContent: 'Nenhum pagamento ainda.' }));
+  for (const p of d.payments) {
+    const ok = p.paidUntil && p.paidUntil > Date.now();
+    list.append(el('div', { className: 'adm-row' },
+      el('span', { className: 'who' }, el('b', { textContent: p.displayName }), ` @${p.username}`),
+      el('span', { textContent: money(p.amount) }),
+      el('span', { className: 'muted', textContent: day(p.createdAt) }),
+      el('span', { className: ok ? 'tag good' : 'tag warn', textContent: ok ? `até ${day(p.paidUntil)}` : 'vencida' })));
+  }
+  $('#dlg-admin').showModal();
 };
 
 function warnBilling() {

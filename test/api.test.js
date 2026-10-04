@@ -447,6 +447,7 @@ test('mensalidade pelo Mercado Pago (servidor de mentira)', async () => {
     });
   });
   await new Promise((r) => mp.listen(0, r));
+  process.env.ADMIN_USERNAMES = 'Eva';
   const pay = createApp({ dbFile: ':memory:', dbUrl: '', payments: createPayments({ token: 'TESTE', price: 15, apiBase: `http://127.0.0.1:${mp.address().port}`, publicUrl: 'https://st.test' }) });
   await new Promise((r) => pay.server.listen(0, r));
   const pbase = `http://127.0.0.1:${pay.server.address().port}`;
@@ -496,7 +497,19 @@ test('mensalidade pelo Mercado Pago (servidor de mentira)', async () => {
     r = await pcall('POST', '/api/payment/check', null, t);
     assert.equal(r.data.credited, 1);
     assert.equal(r.data.billing.paidUntil, until + 30 * 864e5);
+
+    // Painel de assinaturas: só para quem está em ADMIN_USERNAMES
+    const t2 = (await pcall('POST', '/api/register', { username: 'fred', password: '123456' })).data.token;
+    assert.equal((await pcall('GET', '/api/admin/billing', null, t2)).status, 404);
+    assert.equal((await pcall('GET', '/api/me', null, t)).data.billing.admin, true);
+    r = await pcall('GET', '/api/admin/billing', null, t);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.data.counts, { users: 2, free: 0, active: 1, expired: 0, neverPaid: 1 });
+    assert.equal(r.data.revenue.month, 30);
+    assert.equal(r.data.revenue.totalCount, 2);
+    assert.equal(r.data.payments[0].username, 'eva');
   } finally {
+    delete process.env.ADMIN_USERNAMES;
     pay.close();
     mp.close();
   }

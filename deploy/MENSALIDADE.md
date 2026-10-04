@@ -25,3 +25,9 @@ O site avisa o Mercado Pago do endereço de retorno sozinho (o Render informa o 
 Se o aviso automático falhar, o botão **Já paguei** confere direto no Mercado Pago.
 
 Para desligar a cobrança, apague `MP_ACCESS_TOKEN` no Render: todo mundo volta a usar de graça.
+
+## Painel de assinaturas
+
+Para ver quantas pessoas assinaram e quanto entrou, crie no Render a variável `ADMIN_USERNAMES` com o seu nome de usuário
+do StraightTalk (o que você usa para entrar; mais de um separado por vírgula). Depois de salvar, aparece o botão
+**Painel de assinaturas** nas Configurações do app, só para essas contas.
