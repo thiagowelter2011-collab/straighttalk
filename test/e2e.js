@@ -169,6 +169,28 @@ async function resetFixedAccounts() {
   await bia.waitForSelector('.msg .edited');
   console.log('reagir, responder e editar ok');
 
+  // @menção com a lista de sugestões, fixar e buscar
+  await ana.fill('#chat-input', 'olha isso @' + uname('bia').slice(0, 4));
+  await ana.waitForSelector('#mention-pop:not(.hidden) .mention-opt >> text=Bia');
+  await ana.press('#chat-input', 'Enter'); // escolhe a sugestão
+  await ana.type('#chat-input', 'combinado o churrasco no sábado');
+  await ana.press('#chat-input', 'Enter');
+  await bia.waitForSelector('.msg.mentions-me .mention.to-me');
+  const churras = bia.locator('.msg', { hasText: 'churrasco no sábado' });
+  await churras.hover();
+  await churras.locator('.msg-actions button[title="Fixar na conversa"]').click();
+  await ana.waitForSelector('.msg .pinned-label');
+  await ana.click('#btn-pins');
+  await ana.waitForSelector('#side-panel:not(.hidden) .side-item >> text=churrasco');
+  await ana.click('#side-close');
+  await bia.click('#btn-search');
+  await bia.fill('#search-input', 'CHURRASCO');
+  await bia.press('#search-input', 'Enter');
+  await bia.waitForSelector('#side-panel:not(.hidden) .side-item >> text=churrasco');
+  await bia.screenshot({ path: `${OUT}/v2-busca.png` });
+  await bia.click('#side-close');
+  console.log('menção, fixar e buscar ok');
+
   // Imagem e arquivo no chat (o print da tela serve de imagem de teste)
   await bia.waitForSelector('.msg .text >> text=valeu ana');
   const shot = await ana.screenshot({ clip: { x: 0, y: 0, width: 400, height: 300 } });

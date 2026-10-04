@@ -182,6 +182,7 @@ function createApp({
     return {
       replyTo: row.reply_to ? (row.r_author != null ? { id: row.reply_to, author: row.r_author, text: (row.r_text || (row.r_file ? '📎 arquivo' : '')).slice(0, 140) } : { id: row.reply_to, deleted: true }) : null,
       editedAt: row.edited_at || null,
+      pinnedAt: row.pinned_at || null,
       reactions: [],
     };
   }
@@ -813,6 +814,42 @@ function createApp({
     return message;
   });
 
+  // Fixar ou desafixar: qualquer pessoa do canal (ainda não há cargos)
+  route('POST', '/api/messages/:id/pin', async ({ user, params, body }) => {
+    const m = await requireMessage(params.id, user);
+    if (body.pinned) {
+      const n = await db.get('SELECT COUNT(*) AS n FROM messages WHERE channel_id = ? AND pinned_at IS NOT NULL', m.channel_id);
+      if (Number(n.n) >= 50) throw new HttpError(400, 'Este canal já tem 50 mensagens fixadas. Desafixe alguma antes.');
+    }
+    await db.run('UPDATE messages SET pinned_at = ? WHERE id = ?', body.pinned ? now() : null, m.id);
+    const message = await loadMessage(m.id);
+    toServer(m.server_id, { type: 'message-updated', serverId: m.server_id, message });
+    return message;
+  });
+
+  route('GET', '/api/channels/:id/pins', async ({ user, params }) => {
+    const c = await requireChannel(Number(params.id), user);
+    const rows = await db.all(`${MSG_SELECT} WHERE m.channel_id = ? AND m.pinned_at IS NOT NULL ORDER BY m.pinned_at DESC LIMIT 50`, c.id);
+    return { messages: await withReactions('c', rows.map(messagePayload)) };
+  });
+
+  // Busca nas mensagens dos canais do servidor (mais novas primeiro)
+  const likeArg = (q) => {
+    const s = String(q || '').trim();
+    if (s.length < 2) throw new HttpError(400, 'Digite pelo menos 2 letras para buscar.');
+    if (s.length > 100) throw new HttpError(400, 'Busca grande demais.');
+    return '%' + s.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
+  };
+
+  route('GET', '/api/servers/:id/search', async ({ user, params, query }) => {
+    const serverId = Number(params.id);
+    await requireMember(serverId, user);
+    const like = likeArg(query.get('q'));
+    const rows = await db.all(`${MSG_SELECT} JOIN channels ch ON ch.id = m.channel_id
+      WHERE ch.server_id = ? AND (m.text LIKE ? ESCAPE '\\' OR f.name LIKE ? ESCAPE '\\') ORDER BY m.id DESC LIMIT 50`, serverId, like, like);
+    return { messages: rows.map(messagePayload) };
+  });
+
   route('POST', '/api/messages/:id/reactions', async ({ user, params, body }) => {
     const m = await requireMessage(params.id, user);
     await toggleReaction('c', m.id, user, cleanEmoji(body.emoji));
@@ -887,6 +924,29 @@ function createApp({
     const message = await loadDm(m.id);
     for (const uid of [m.from_id, m.to_id]) toUser(uid, { type: 'dm-updated', message });
     return message;
+  });
+
+  route('POST', '/api/dm/messages/:id/pin', async ({ user, params, body }) => {
+    const m = await requireDm(params.id, user);
+    await db.run('UPDATE dm_messages SET pinned_at = ? WHERE id = ?', body.pinned ? now() : null, m.id);
+    const message = await loadDm(m.id);
+    for (const uid of [m.from_id, m.to_id]) toUser(uid, { type: 'dm-updated', message });
+    return message;
+  });
+
+  route('GET', '/api/dm/:userId/pins', async ({ user, params }) => {
+    const peer = await requireDmPeer(Number(params.userId), user);
+    const rows = await db.all(`${DM_SELECT} WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.pinned_at IS NOT NULL
+      ORDER BY m.pinned_at DESC LIMIT 50`, user.id, peer.id, peer.id, user.id);
+    return { messages: await withReactions('d', rows.map(dmPayload)) };
+  });
+
+  route('GET', '/api/dm/:userId/search', async ({ user, params, query }) => {
+    const peer = await requireDmPeer(Number(params.userId), user);
+    const like = likeArg(query.get('q'));
+    const rows = await db.all(`${DM_SELECT} WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?))
+      AND (m.text LIKE ? ESCAPE '\\' OR f.name LIKE ? ESCAPE '\\') ORDER BY m.id DESC LIMIT 50`, user.id, peer.id, peer.id, user.id, like, like);
+    return { messages: rows.map(dmPayload) };
   });
 
   route('POST', '/api/dm/messages/:id/reactions', async ({ user, params, body }) => {

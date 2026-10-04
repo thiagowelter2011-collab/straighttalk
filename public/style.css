@@ -598,3 +598,34 @@ select { cursor: pointer; }
 
 .dialog label input, .dialog label select, .auth-card label input { font-weight: 400; }
 .dialog { max-height: calc(100vh - 32px); overflow-y: auto; }
+
+/* @menções */
+.mention { color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 0 3px; font-weight: 600; }
+.mention.to-me { color: #b45309; background: rgba(245, 158, 11, .18); }
+.msg.mentions-me { background: rgba(245, 158, 11, .08); box-shadow: inset 3px 0 0 #f59e0b; }
+.mention-badge { background: #f59e0b; }
+.mention-pop { position: absolute; left: 8px; right: 8px; bottom: calc(100% + 6px); z-index: 20; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: var(--shadow-lg, 0 12px 32px rgba(0,0,0,.18)); padding: 6px; display: grid; gap: 2px; max-height: 280px; overflow-y: auto; }
+.mention-opt { display: flex; align-items: center; gap: 10px; border: 0; background: transparent; padding: 6px 8px; border-radius: 9px; color: var(--text); text-align: left; }
+.mention-opt .avatar { width: 26px; height: 26px; font-size: 11px; }
+.mention-opt span { color: var(--text-3); font-size: 12.5px; }
+.mention-opt.sel, .mention-opt:hover { background: var(--accent-soft); }
+
+/* Fixadas */
+.pinned-label { display: flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600; color: var(--text-3); margin: 1px 0 2px; }
+
+/* Busca e painel lateral */
+.search-form input { width: 220px; height: 34px; padding: 0 12px; border-radius: 10px; font-size: 13.5px; font-weight: 400; }
+.main { position: relative; }
+.side-panel { position: absolute; top: 56px; right: 0; bottom: 0; width: min(380px, 100%); z-index: 15; background: var(--surface);
+  border-left: 1px solid var(--border); box-shadow: -12px 0 32px rgba(0, 0, 0, .10); display: flex; flex-direction: column; animation: fade .2s; }
+.side-panel header { display: flex; align-items: center; justify-content: space-between; padding: 12px 12px 10px 16px; border-bottom: 1px solid var(--border); }
+.side-panel header b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-list { flex: 1; overflow-y: auto; padding: 8px; display: grid; align-content: start; gap: 6px; }
+.side-item { text-align: left; border: 1px solid var(--border); background: var(--surface-2); border-radius: 12px; padding: 9px 11px; color: var(--text); display: grid; gap: 3px; }
+.side-item:hover { border-color: var(--accent); }
+.side-head { font-size: 13px; display: flex; gap: 4px; align-items: baseline; }
+.side-time { margin-left: auto; font-size: 11.5px; }
+.side-text { font-size: 13.5px; color: var(--text-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.side-empty { padding: 12px; }
+@media (max-width: 720px) { .search-form input { width: 140px; } }

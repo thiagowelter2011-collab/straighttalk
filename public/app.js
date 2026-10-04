@@ -33,6 +33,7 @@ const S = {
   messages: new Map(),          // channelId ou 'dm:<userId>' -> [{...}]
   hasMore: new Map(),           // mesma chave -> bool
   unread: new Set(),            // channelIds
+  mentions: new Set(),          // channelIds com @menção a você ainda não vista
   unreadServers: new Set(),
   voiceState: new Map(),        // serverId -> { channelId: participants[] }
   voice: null,                  // { serverId, channelId, engine, mediaId, sharing, screenStreamId }
@@ -431,10 +432,12 @@ async function onWs(msg) {
       if (list && !list.some((x) => x.id === m.id)) list.push(m);
       clearTyping(m.channelId, m.userId);
       const visible = S.view === 'text' && S.serverId === msg.serverId && S.textChannel[S.serverId] === m.channelId;
+      const mentioned = m.userId !== S.user.id && mentionsMe(m.text);
       if (m.userId !== S.user.id) {
-        if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${preview(m)}`); }
+        if (!visible || document.hidden) { Sounds.play(mentioned ? 'nudge' : 'message'); flashTitle(`${m.author} diz: ${preview(m)}`); }
         const sname = S.servers.find((x) => x.id === msg.serverId)?.name || '';
-        notify(`${m.author} diz: (${sname})`, preview(m), 'ch' + m.channelId, async () => {
+        if (mentioned && !visible) toast(`${m.author} mencionou você: ${preview(m).slice(0, 80)}`);
+        notify(mentioned ? `${m.author} mencionou você (${sname})` : `${m.author} diz: (${sname})`, preview(m), 'ch' + m.channelId, async () => {
           if (S.serverId !== msg.serverId) await selectServer(msg.serverId);
           openText(m.channelId);
         });
@@ -442,6 +445,7 @@ async function onWs(msg) {
       if (visible) appendMessage(m, m.channelId);
       else if (m.userId !== S.user.id) {
         S.unread.add(m.channelId);
+        if (mentioned) S.mentions.add(m.channelId);
         if (msg.serverId !== S.serverId) S.unreadServers.add(msg.serverId);
         renderRail();
         renderChannels();
@@ -600,6 +604,7 @@ async function openText(channelId) {
   S.textChannel[S.serverId] = channelId;
   S.view = 'text';
   S.unread.delete(channelId);
+  S.mentions.delete(channelId);
   updateBadge();
   closeDrawer();
   renderAll();
@@ -686,7 +691,7 @@ function userName(id) {
 
 function messageNode(m, prev) {
   const first = !prev || prev.userId !== m.userId || m.createdAt - prev.createdAt > 5 * 60_000 || !!m.replyTo;
-  const node = el('div', { className: 'msg' + (first ? ' first' : '') });
+  const node = el('div', { className: 'msg' + (first ? ' first' : '') + (m.userId !== S.user.id && mentionsMe(m.text) ? ' mentions-me' : '') });
   node.dataset.id = m.id;
   const avatar = el('div', { className: 'avatar' });
   paintAvatar(avatar, m.author, m.authorAvatar);
@@ -707,6 +712,7 @@ function messageNode(m, prev) {
     const author = el('span', { className: 'author', textContent: m.author });
     body.append(el('div', { className: 'head' }, author, el('span', { className: 'time', textContent: fmtTime(m.createdAt) })));
   }
+  if (m.pinnedAt) body.append(el('div', { className: 'pinned-label' }, iconEl('pin', 12), ' Fixada'));
   if (m.text || m.editedAt) {
     const text = el('div', { className: 'text' });
     linkify(text, m.text, true);
@@ -759,6 +765,10 @@ function messageActions(m, node) {
     b.after(pick);
   });
   btn('reply', 'Responder', () => startReply(m));
+  btn('pin', m.pinnedAt ? 'Desafixar' : 'Fixar na conversa', async () => {
+    try { updateMessage(await api('POST', `${msgUrl(m)}/pin`, { pinned: !m.pinnedAt })); toast(m.pinnedAt ? 'Mensagem desafixada.' : 'Mensagem fixada. Veja todas no botão de alfinete lá em cima.'); }
+    catch (err) { toast(err.message); }
+  });
   if (mine) btn('edit', 'Editar', () => startEdit(m, node));
   if (mine || (m.channelId && S.detail?.server.ownerId === S.user.id)) {
     const del = btn('trash', 'Apagar mensagem', async () => {
@@ -794,9 +804,15 @@ function removeMessage(key, id) {
   if (currentConv()?.key === key) renderMessages(false);
 }
 
-function jumpTo(id) {
-  const node = $(`#messages .msg[data-id="${id}"]`);
-  if (!node) return toast('Essa mensagem está mais acima. Carregue as mensagens antigas.');
+async function jumpTo(id) {
+  let node = $(`#messages .msg[data-id="${id}"]`);
+  // Mensagem antiga: vai carregando para trás até achar (no máximo umas 1500 mensagens)
+  const conv = currentConv();
+  for (let i = 0; !node && conv && i < 30 && S.hasMore.get(conv.key) && currentConv()?.key === conv.key; i++) {
+    try { await loadOlder(conv); } catch { break; }
+    node = $(`#messages .msg[data-id="${id}"]`);
+  }
+  if (!node) return toast('Não achei essa mensagem (pode ter sido apagada).');
   node.scrollIntoView({ behavior: 'smooth', block: 'center' });
   node.classList.remove('flash');
   void node.offsetWidth;
@@ -935,6 +951,126 @@ input.addEventListener('paste', (e) => {
   const files = [...(e.clipboardData?.files || [])];
   if (files.length) { e.preventDefault(); sendFiles(files); }
 });
+/* ---- @menções: lista que aparece ao digitar @ ---- */
+
+let mentionSel = 0;
+function mentionCandidates() {
+  const before = input.value.slice(0, input.selectionStart);
+  const m = before.match(/(?:^|[^\w.@])@([\w.]{0,32})$/);
+  if (!m) return null;
+  const q = m[1].toLowerCase();
+  let people = [];
+  if (S.view === 'text' && S.detail) people = S.detail.members;
+  else if (S.view === 'dm') { const u = S.peers.get(S.dmUserId); if (u) people = [u]; }
+  const list = people.filter((p) => p.id !== S.user.id && p.username &&
+    (p.username.startsWith(q) || p.displayName.toLowerCase().includes(q))).slice(0, 8);
+  return list.length ? { q, list, start: before.length - m[1].length - 1 } : null;
+}
+function renderMentionPop() {
+  const pop = $('#mention-pop');
+  const c = mentionCandidates();
+  if (!c) { pop.classList.add('hidden'); return; }
+  mentionSel = Math.min(mentionSel, c.list.length - 1);
+  pop.replaceChildren(...c.list.map((p, i) => {
+    const av = el('div', { className: 'avatar' });
+    paintAvatar(av, p.displayName, p.avatarKey);
+    const o = el('button', { type: 'button', className: 'mention-opt' + (i === mentionSel ? ' sel' : '') }, av, el('b', { textContent: p.displayName }), el('span', { textContent: '@' + p.username }));
+    o.onmousedown = (e) => { e.preventDefault(); pickMention(p); };
+    return o;
+  }));
+  pop.classList.remove('hidden');
+}
+function pickMention(p) {
+  const c = mentionCandidates();
+  if (!c) return;
+  const end = input.selectionStart;
+  input.value = input.value.slice(0, c.start) + '@' + p.username + ' ' + input.value.slice(end);
+  const pos = c.start + p.username.length + 2;
+  input.setSelectionRange(pos, pos);
+  mentionSel = 0;
+  $('#mention-pop').classList.add('hidden');
+  input.focus();
+}
+function mentionKey(e) {
+  if ($('#mention-pop').classList.contains('hidden')) return false;
+  const c = mentionCandidates();
+  if (!c) return false;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    mentionSel = (mentionSel + (e.key === 'ArrowDown' ? 1 : -1) + c.list.length) % c.list.length;
+    renderMentionPop();
+    return true;
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickMention(c.list[mentionSel]); return true; }
+  if (e.key === 'Escape') { e.preventDefault(); $('#mention-pop').classList.add('hidden'); return true; }
+  return false;
+}
+input.addEventListener('blur', () => setTimeout(() => $('#mention-pop').classList.add('hidden'), 150));
+
+/* ---- Painel lateral: busca e mensagens fixadas ---- */
+
+function showSidePanel(title, messages, empty) {
+  $('#side-title').textContent = title;
+  const box = $('#side-list');
+  box.innerHTML = '';
+  if (!messages.length) box.append(el('p', { className: 'muted small side-empty', textContent: empty }));
+  const conv = currentConv();
+  for (const m of messages) {
+    const ch = m.channelId && S.detail?.channels.find((c) => c.id === m.channelId);
+    const item = el('button', { type: 'button', className: 'side-item' },
+      el('div', { className: 'side-head' }, el('b', { textContent: m.author }),
+        ch && ch.id !== conv?.channel?.id ? el('span', { className: 'muted', textContent: ' em #' + ch.name }) : null,
+        el('span', { className: 'muted side-time', textContent: fmtTime(m.createdAt) })));
+    const t = el('div', { className: 'side-text' });
+    linkify(t, m.text || (m.file ? '📎 ' + m.file.name : ''), true);
+    item.append(t);
+    item.onclick = async () => {
+      if (m.channelId && S.textChannel[S.serverId] !== m.channelId) await openText(m.channelId);
+      jumpTo(m.id);
+    };
+    box.append(item);
+  }
+  $('#side-panel').classList.remove('hidden');
+}
+
+$('#side-close').onclick = () => $('#side-panel').classList.add('hidden');
+
+$('#btn-pins').onclick = async () => {
+  const conv = currentConv();
+  if (!conv) return;
+  if (!$('#side-panel').classList.contains('hidden') && $('#side-title').textContent.startsWith('Fixadas')) return $('#side-panel').classList.add('hidden');
+  try {
+    const { messages } = await api('GET', conv.dm ? `/api/dm/${conv.userId}/pins` : `/api/channels/${conv.channel.id}/pins`);
+    showSidePanel(`Fixadas em ${conv.name}`, messages, 'Nenhuma mensagem fixada. Passe o mouse numa mensagem e clique no alfinete.');
+  } catch (err) { toast(err.message); }
+};
+
+function openSearch() {
+  const f = $('#search-form');
+  f.classList.toggle('hidden');
+  if (!f.classList.contains('hidden')) $('#search-input').focus();
+}
+$('#btn-search').onclick = openSearch;
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && (S.view === 'text' || S.view === 'dm')) {
+    e.preventDefault();
+    $('#search-form').classList.remove('hidden');
+    $('#search-input').focus();
+    $('#search-input').select();
+  }
+});
+$('#search-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const q = $('#search-input').value.trim();
+  const conv = currentConv();
+  if (!conv || !q) return;
+  try {
+    const { messages } = await api('GET', conv.dm ? `/api/dm/${conv.userId}/search?q=${encodeURIComponent(q)}` : `/api/servers/${S.serverId}/search?q=${encodeURIComponent(q)}`);
+    showSidePanel(`Busca: "${q}"`, messages, 'Nada encontrado.');
+  } catch (err) { toast(err.message); }
+};
+$('#search-input').addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('#search-form').classList.add('hidden'); input.focus(); } });
+
 const textView = $('#view-text');
 textView.addEventListener('dragover', (e) => {
   if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
@@ -951,6 +1087,7 @@ textView.addEventListener('drop', (e) => {
 });
 
 input.addEventListener('keydown', (e) => {
+  if (mentionKey(e)) return;
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
     sendMessage();
@@ -965,6 +1102,7 @@ input.addEventListener('keydown', (e) => {
   }
 });
 input.addEventListener('input', () => {
+  renderMentionPop();
   input.style.height = 'auto';
   input.style.height = input.scrollHeight + 'px';
   const conv = currentConv();
@@ -1134,9 +1272,9 @@ function renderFriends() {
     const c = S.dms.find((x) => x.user.id === f.id);
     const li = rowFor(u, st === 'offline' ? 'offline' : '', `@${u.username}: clique para conversar`);
     li.querySelector('.frame').dataset.status = st;
-    li.append(el('span', { className: 'ch-name', textContent: u.displayName }),
-      c?.unread ? el('span', { className: 'badge', textContent: c.unread > 99 ? '99+' : String(c.unread) }) : null,
-      el('span', { className: 'ch-actions' }, action('x', 'Desfazer amizade', () => removeFriend(u))));
+    li.append(el('span', { className: 'ch-name', textContent: u.displayName }));
+    if (c?.unread) li.append(el('span', { className: 'badge', textContent: c.unread > 99 ? '99+' : String(c.unread) }));
+    li.append(el('span', { className: 'ch-actions' }, action('x', 'Desfazer amizade', () => removeFriend(u))));
     if (S.view === 'dm' && S.dmUserId === f.id) li.classList.add('active');
     if (c?.unread) li.classList.add('unread');
     li.onclick = () => openDm(f.id);
@@ -1533,6 +1671,7 @@ function renderChannels() {
       ownerActions(c));
     if (S.view === 'text' && S.textChannel[S.serverId] === c.id) li.classList.add('active');
     if (S.unread.has(c.id)) li.classList.add('unread');
+    if (S.mentions.has(c.id)) li.querySelector('.ch-name').after(el('span', { className: 'badge mention-badge', textContent: '@', title: 'Mencionaram você aqui' }));
     li.onclick = (e) => { if (!e.target.closest('.ch-actions')) openText(c.id); };
     textUl.append(li);
   }
@@ -1620,6 +1759,9 @@ function voiceUserNode(p) {
 
 function renderMain() {
   const title = $('#main-title');
+  const inConv = S.view === 'text' || S.view === 'dm';
+  document.querySelectorAll('.conv-only').forEach((b) => b.classList.toggle('hidden', !inConv));
+  if (!inConv) { $('#side-panel').classList.add('hidden'); $('#search-form').classList.add('hidden'); }
   $('#view-empty').classList.toggle('hidden', S.view !== 'empty');
   $('#view-text').classList.toggle('hidden', S.view !== 'text' && S.view !== 'dm');
   $('#view-voice').classList.toggle('hidden', S.view !== 'voice');
@@ -2365,9 +2507,22 @@ function fmtTime(ts) {
 function linkify(node, text, emoticons = false) {
   for (const part of text.split(/(https?:\/\/[^\s]+)/g)) {
     if (/^https?:\/\//.test(part)) node.append(el('a', { href: part, textContent: part, target: '_blank', rel: 'noopener noreferrer' }));
-    else if (part && emoticons) emoticonify(node, part);
-    else if (part) node.append(document.createTextNode(part));
+    else if (part && emoticons) {
+      // @menções viram destaque; as suas ficam com outra cor
+      for (const bit of part.split(MENTION_SPLIT)) {
+        if (MENTION_ONE.test(bit)) node.append(el('span', { className: 'mention' + (bit.slice(1).toLowerCase() === S.user?.username ? ' to-me' : ''), textContent: bit }));
+        else if (bit) emoticonify(node, bit);
+      }
+    } else if (part) node.append(document.createTextNode(part));
   }
+}
+
+const MENTION_SPLIT = /((?<![\w.@])@[a-zA-Z0-9_.]{3,32}(?![\w]))/;
+const MENTION_ONE = /^@[a-zA-Z0-9_.]{3,32}$/;
+function mentionsMe(text) {
+  if (!text || !S.user) return false;
+  const u = S.user.username.replace(/[.]/g, '\\.');
+  return new RegExp(`(^|[^\\w.@])@${u}(?![\\w])`, 'i').test(text);
 }
 let toastTimer;
 function toast(text) {

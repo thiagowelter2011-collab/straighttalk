@@ -375,6 +375,39 @@ test('editar, responder e reagir (canal e conversa particular)', async () => {
   sb.ws.close();
 });
 
+test('fixar e buscar mensagens (canal e conversa particular)', async () => {
+  let r = await call('POST', `/api/channels/${textId}/messages`, { text: 'regras do grupo: 100% diversão_total' }, ana);
+  const m = r.data;
+  await call('POST', `/api/channels/${textId}/messages`, { text: 'outra coisa qualquer' }, bia);
+  r = await call('POST', `/api/messages/${m.id}/pin`, { pinned: true }, bia);
+  assert.equal(r.status, 200);
+  assert.ok(r.data.pinnedAt);
+  r = await call('GET', `/api/channels/${textId}/pins`, null, ana);
+  assert.deepEqual(r.data.messages.map((x) => x.id), [m.id]);
+
+  r = await call('GET', `/api/servers/${serverId}/search?q=${encodeURIComponent('REGRAS do')}`, null, bia);
+  assert.equal(r.status, 200);
+  assert.ok(r.data.messages.some((x) => x.id === m.id), 'busca sem diferenciar maiúsculas');
+  r = await call('GET', `/api/servers/${serverId}/search?q=${encodeURIComponent('100%')}`, null, bia);
+  assert.deepEqual(r.data.messages.map((x) => x.id), [m.id], '% é literal');
+  r = await call('GET', `/api/servers/${serverId}/search?q=${encodeURIComponent('ras_do')}`, null, bia);
+  assert.equal(r.data.messages.length, 0, '_ é literal');
+  assert.equal((await call('GET', `/api/servers/${serverId}/search?q=a`, null, bia)).status, 400, 'busca curta');
+  const caio = (await call('POST', '/api/login', { username: 'caio', password: '123456' })).data.token;
+  assert.equal((await call('GET', `/api/servers/${serverId}/search?q=regras`, null, caio)).status, 404, 'quem não é membro');
+
+  await call('POST', `/api/messages/${m.id}/pin`, { pinned: false }, ana);
+  assert.equal((await call('GET', `/api/channels/${textId}/pins`, null, ana)).data.messages.length, 0);
+
+  const biaId = (await call('GET', '/api/me', null, bia)).data.user.id;
+  const anaId = (await call('GET', '/api/me', null, ana)).data.user.id;
+  r = await call('POST', `/api/dm/${biaId}/messages`, { text: 'senha do wifi: abacaxi' }, ana);
+  await call('POST', `/api/dm/messages/${r.data.id}/pin`, { pinned: true }, bia);
+  assert.equal((await call('GET', `/api/dm/${anaId}/pins`, null, bia)).data.messages[0].text, 'senha do wifi: abacaxi');
+  assert.equal((await call('GET', `/api/dm/${biaId}/search?q=abacaxi`, null, ana)).data.messages.length, 1);
+  assert.equal((await call('POST', `/api/dm/messages/${r.data.id}/pin`, { pinned: true }, caio)).status, 404);
+});
+
 test('amigos por nome de usuário: pedido, aceitar, conversar sem servidor e presença', async () => {
   const caio = (await call('POST', '/api/login', { username: 'caio', password: '123456' })).data.token;
   const dani = (await call('POST', '/api/register', { username: 'dani', password: '123456', displayName: 'Dani' })).data.token;
