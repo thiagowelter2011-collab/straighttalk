@@ -8,7 +8,9 @@
 // Os dois expõem a mesma interface para o app:
 //   join(channelId) -> mediaId · leave() · setMuted(b) · setDeafened(b) · setVolume(mediaId, v)
 //   startShare({ mode, audio }) -> streamId · stopShare() · localScreen
-//   callbacks: onScreen(mediaId, stream|null, el?) · onSpeaking(mediaId, bool) · onShareEnded() · onDisconnected()
+//   startCamera({ deviceId }) -> streamId · stopCamera() · localCamera
+//   callbacks: onScreen(mediaId, stream|null, el?) · onCamera(mediaId, stream|null, el?) · onSpeaking(mediaId, bool)
+//              onShareEnded() · onCameraEnded() · onDisconnected()
 
 (function () {
   // Supressão de ruído: 'ai' (RNNoise, tira teclado, ventilador e barulho de fundo), 'browser' (a do navegador) ou 'off'
@@ -110,6 +112,14 @@
     }
   }
 
+  // Câmera: 720p a 30 fps (o navegador reduz se a câmera não alcançar)
+  function cameraConstraints(deviceId) {
+    return {
+      deviceId: deviceId ? { exact: deviceId } : undefined,
+      width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 },
+    };
+  }
+
   function applySink(el, sinkId) {
     if (sinkId && typeof el.setSinkId === 'function') el.setSinkId(sinkId).catch(() => {});
   }
@@ -141,6 +151,8 @@
       this.deafened = false;
       this.volumes = new Map();
       this.screenStreamIds = new Map(); // connId -> id da stream de tela
+      this.cameraStreamIds = new Map(); // connId -> id da stream da câmera
+      this.localCamera = null;
     }
 
     async join() {
@@ -160,18 +172,35 @@
     // Lista de quem está no canal (vinda do servidor): cria/remove conexões
     updateParticipants(list) {
       const ids = new Set(list.map((p) => p.connId).filter((id) => id !== this.myConnId));
-      for (const p of list) if (p.screenStream) this.screenStreamIds.set(p.connId, p.screenStream);
+      for (const p of list) {
+        if (p.screenStream) this.screenStreamIds.set(p.connId, p.screenStream);
+        if (p.cameraStream) this.cameraStreamIds.set(p.connId, p.cameraStream); else this.cameraStreamIds.delete(p.connId);
+      }
       for (const id of ids) if (!this.peers.has(id)) this.addPeer(id);
       for (const id of [...this.peers.keys()]) if (!ids.has(id)) this.removePeer(id);
+      for (const peer of this.peers.values()) this.classify(peer);
+    }
+
+    // Cada vídeo recebido é tela ou câmera, conforme o id da stream que a pessoa anunciou
+    classify(peer) {
+      const camId = this.cameraStreamIds.get(peer.id);
+      let screen = null;
+      let camera = null;
+      for (const st of peer.video.values()) {
+        if (st.id === camId) camera = st; else screen = st;
+      }
+      if (peer.shownScreen !== screen) { peer.shownScreen = screen; this.cb.onScreen(peer.id, screen); }
+      if (peer.shownCamera !== camera) { peer.shownCamera = camera; this.cb.onCamera?.(peer.id, camera); }
     }
 
     addPeer(id) {
       const pc = new RTCPeerConnection({ iceServers: this.iceServers, bundlePolicy: 'max-bundle' });
-      const peer = { id, pc, polite: this.myConnId < id, makingOffer: false, ignoreOffer: false, audio: new Map(), screenSenders: [], stops: [] };
+      const peer = { id, pc, polite: this.myConnId < id, makingOffer: false, ignoreOffer: false, audio: new Map(), video: new Map(), screenSenders: [], cameraSenders: [], stops: [], shownScreen: null, shownCamera: null };
       this.peers.set(id, peer);
 
       this.mic?.getTracks().forEach((t) => pc.addTrack(t, this.mic));
       if (this.localScreen) this.addScreenTo(peer);
+      if (this.localCamera) this.addCameraTo(peer);
 
       pc.onnegotiationneeded = async () => {
         try {
@@ -208,12 +237,13 @@
             if (stream.id !== this.screenStreamIds.get(id)) this.cb.onSpeaking(id, s);
           }));
         } else {
-          this.cb.onScreen(id, stream);
+          peer.video.set(stream.id, stream);
+          this.classify(peer);
         }
         stream.onremovetrack = ({ track: t }) => {
           const el = peer.audio.get(t.id);
           if (el) { el.remove(); peer.audio.delete(t.id); }
-          if (!stream.getVideoTracks().length) this.cb.onScreen(id, null);
+          if (!stream.getVideoTracks().length && peer.video.delete(stream.id)) this.classify(peer);
         };
       };
     }
@@ -226,6 +256,7 @@
       p.stops.forEach((s) => s());
       this.peers.delete(id);
       this.cb.onScreen(id, null);
+      this.cb.onCamera?.(id, null);
       this.cb.onSpeaking(id, false);
     }
 
@@ -309,8 +340,39 @@
       this.localScreen = null;
     }
 
+    async startCamera({ deviceId } = {}) {
+      this.localCamera = await navigator.mediaDevices.getUserMedia({ video: cameraConstraints(deviceId), audio: false });
+      const [video] = this.localCamera.getVideoTracks();
+      video.contentHint = 'motion';
+      video.onended = () => { this.stopCamera(); this.cb.onCameraEnded?.(); };
+      for (const peer of this.peers.values()) this.addCameraTo(peer);
+      return this.localCamera.id;
+    }
+
+    addCameraTo(peer) {
+      peer.cameraSenders = this.localCamera.getTracks().map((t) => {
+        const sender = peer.pc.addTrack(t, this.localCamera);
+        const params = sender.getParameters();
+        if (!params.encodings?.length) params.encodings = [{}];
+        params.encodings[0].maxBitrate = 1_500_000;
+        sender.setParameters(params).catch(() => {});
+        return sender;
+      });
+    }
+
+    stopCamera() {
+      if (!this.localCamera) return;
+      this.localCamera.getTracks().forEach((t) => t.stop());
+      for (const peer of this.peers.values()) {
+        peer.cameraSenders.forEach((s) => { try { peer.pc.removeTrack(s); } catch {} });
+        peer.cameraSenders = [];
+      }
+      this.localCamera = null;
+    }
+
     leave() {
       this.stopShare();
+      this.stopCamera();
       for (const id of [...this.peers.keys()]) this.removePeer(id);
       this.stopMicWatch?.();
       this.stopMicRaw?.();
@@ -328,6 +390,7 @@
       this.cb = callbacks;
       this.room = null;
       this.localScreen = null;
+      this.localCamera = null;
       this.muted = false;
       this.deafened = false;
       this.volumes = new Map();
@@ -361,15 +424,24 @@
           video.muted = true;
           track.attach(video);
           this.cb.onScreen(id, new MediaStream([track.mediaStreamTrack]), video);
+        } else if (track.source === LK.Track.Source.Camera) {
+          const video = document.createElement('video');
+          video.autoplay = true;
+          video.playsInline = true;
+          video.muted = true;
+          track.attach(video);
+          this.cb.onCamera?.(id, new MediaStream([track.mediaStreamTrack]), video);
         }
       });
       room.on(E.TrackUnsubscribed, (track, pub, participant) => {
         track.detach().forEach((el) => el.remove());
         if (track.source === LK.Track.Source.ScreenShare) this.cb.onScreen(participant.identity, null);
+        if (track.source === LK.Track.Source.Camera) this.cb.onCamera?.(participant.identity, null);
       });
       room.on(E.ParticipantConnected, (p) => this.applyParticipantVolume(p));
       room.on(E.ParticipantDisconnected, (p) => {
         this.cb.onScreen(p.identity, null);
+        this.cb.onCamera?.(p.identity, null);
         this.cb.onSpeaking(p.identity, false);
       });
       room.on(E.ActiveSpeakersChanged, (speakers) => {
@@ -382,6 +454,10 @@
         if (pub.source === LK.Track.Source.ScreenShare && this.localScreen) {
           this.localScreen = null;
           this.cb.onShareEnded();
+        }
+        if (pub.source === LK.Track.Source.Camera && this.localCamera) {
+          this.localCamera = null;
+          this.cb.onCameraEnded?.();
         }
       });
       room.on(E.Disconnected, () => {
@@ -470,6 +546,22 @@
       if (!this.localScreen) return;
       this.localScreen = null;
       this.room?.localParticipant.setScreenShareEnabled(false).catch(() => {});
+    }
+
+    async startCamera({ deviceId } = {}) {
+      const pub = await this.room.localParticipant.setCameraEnabled(true, {
+        deviceId: deviceId || undefined,
+        resolution: { width: 1280, height: 720, frameRate: 30 },
+      }, { simulcast: true, videoCodec: 'vp8' });
+      if (!pub?.track) throw Object.assign(new Error('cancelado'), { name: 'NotAllowedError' });
+      this.localCamera = new MediaStream([pub.track.mediaStreamTrack]);
+      return this.localCamera.id;
+    }
+
+    stopCamera() {
+      if (!this.localCamera) return;
+      this.localCamera = null;
+      this.room?.localParticipant.setCameraEnabled(false).catch(() => {});
     }
 
     leave() {

@@ -289,6 +289,7 @@ select { cursor: pointer; }
 .voice-user .avatar { width: 24px; height: 24px; font-size: 11px; }
 .voice-user .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 13px; }
 .voice-user .icons { display: flex; gap: 4px; align-items: center; color: var(--danger); }
+.voice-user .icons .cam-ic { color: var(--online); }
 .live { background: var(--danger); color: #fff; font-size: 9.5px; font-weight: 800; border-radius: 5px; padding: 1px 5px; letter-spacing: .4px; }
 .voice-user input[type=range] { width: 70px; padding: 0; border: 0; background: none; box-shadow: none; accent-color: var(--accent); }
 
@@ -298,7 +299,8 @@ select { cursor: pointer; }
 .voice-where { font-size: 12.5px; color: var(--text-2); text-decoration: none; }
 .voice-where:hover { text-decoration: underline; }
 .voice-actions { margin-top: 10px; }
-.voice-actions .btn { width: 100%; }
+.voice-actions { display: flex; gap: 8px; }
+.voice-actions .btn { flex: 1; min-width: 0; }
 
 /* "Eu": foto grande no quadrinho, nome, status e mensagem pessoal */
 .user-panel { order: 0; flex: none; display: flex; flex-direction: column; gap: 10px; padding: 16px 14px 10px; }
@@ -450,6 +452,11 @@ select { cursor: pointer; }
 .tile.screen { background: #000; grid-column: span 2; grid-row: span 2; }
 .stage.focused .tile.screen { grid-column: auto; grid-row: auto; }
 .tile video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.tile.person video.cam { position: absolute; inset: 0; object-fit: cover; background: #000; }
+.tile.person.has-video .avatar { visibility: hidden; }
+.tile.person.mirror video.cam { transform: scaleX(-1); }
+.tile.person.has-video .label { z-index: 1; }
+.tile.person.has-video.speaking::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 3px var(--online); pointer-events: none; z-index: 1; }
 .tile .avatar { width: 84px; height: 84px; font-size: 32px; border-radius: 28px; box-shadow: 0 10px 30px rgba(0, 0, 0, .45); }
 .tile.speaking .avatar { box-shadow: 0 0 0 4px var(--online), 0 10px 30px rgba(0, 0, 0, .45); }
 .tile .label {

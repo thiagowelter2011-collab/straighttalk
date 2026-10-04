@@ -9,7 +9,7 @@ const tag = Date.now().toString(36);
   const browser = await chromium.launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
   const errors = [];
   async function person(name) {
-    const ctx = await browser.newContext({ permissions: ['microphone'], viewport: { width: 1400, height: 800 } });
+    const ctx = await browser.newContext({ permissions: ['microphone', 'camera'], viewport: { width: 1400, height: 800 } });
     const page = await ctx.newPage();
     page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
     page.on('console', (m) => { if (m.type() === 'error' && !/favicon|ERR_|WebSocket/.test(m.text())) errors.push(`${name}: ${m.text()}`); });
@@ -152,6 +152,19 @@ const tag = Date.now().toString(36);
   for (const [n, p] of [['Bia', bia], ['Caio', caio]]) {
     await p.waitForFunction(() => { const v = document.querySelector('#stage .tile.screen video'); return v && v.videoWidth > 0; }, null, { timeout: 20000 });
   }
+  // Câmera da Bia ao lado da tela da Ana
+  await bia.click('#vb-cam');
+  for (const p of [ana, caio]) {
+    await p.waitForFunction(() => { const v = document.querySelector('#stage .tile.person.has-video video.cam'); return v && v.videoWidth > 0; }, null, { timeout: 20000 });
+  }
+  await bia.waitForFunction(() => document.querySelector('#stage .tile.person.mirror video.cam'), null, { timeout: 5000 });
+  const cam = await caio.evaluate(() => ({
+    camera: [...document.querySelectorAll('#stage .tile.person.has-video video.cam')].map((v) => `${v.videoWidth}x${v.videoHeight}`),
+    screen: document.querySelectorAll('#stage .tile.screen').length,
+    icon: [...document.querySelectorAll('.voice-user')].some((li) => li.textContent.includes('Bia') && li.querySelector('.cam-ic')),
+  }));
+  console.log('Caio vê a câmera:', JSON.stringify(cam));
+  if (!cam.camera.length || !cam.screen || !cam.icon) throw new Error('câmera não apareceu');
   await bia.waitForTimeout(3000);
   const info = await bia.evaluate(() => ({
     screen: [...document.querySelectorAll('#stage .tile.screen video')].map((v) => `${v.videoWidth}x${v.videoHeight}`),
@@ -171,11 +184,14 @@ const tag = Date.now().toString(36);
   await ana.click('#text-channels .channel >> nth=0');
   await ana.screenshot({ path: `${OUT}/v2-chat.png` });
 
+  await bia.click('#btn-cam'); // desligar câmera
+  await caio.waitForFunction(() => !document.querySelector('#stage .tile.person.has-video'), null, { timeout: 10000 });
+  console.log('desligar câmera ok');
   await ana.click('#btn-share'); // parar
   await bia.waitForFunction(() => !document.querySelector('#stage .tile.screen'), null, { timeout: 10000 });
   console.log('parar compartilhamento ok');
   await ana.click('#btn-mic');
-  await bia.waitForFunction(() => [...document.querySelectorAll('.voice-user')].some((li) => li.textContent.includes('Ana') && li.querySelector('.state-ic')), null, { timeout: 5000 });
+  await bia.waitForFunction(() => [...document.querySelectorAll('.voice-user')].some((li) => li.textContent.includes('Ana') && li.querySelector('.state-ic:not(.cam-ic)')), null, { timeout: 5000 });
   console.log('mudo ok');
   await caio.click('#btn-hangup');
   await bia.waitForFunction(() => document.querySelectorAll('#stage .tile.person').length === 2, null, { timeout: 5000 });

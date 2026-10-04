@@ -39,6 +39,7 @@ const S = {
   muted: localGet('st-muted') === '1',
   deafened: localGet('st-deafened') === '1',
   screens: new Map(),           // mediaId -> { stream, el }
+  cameras: new Map(),           // mediaId -> { stream, el, local? }
   speaking: new Set(),          // mediaIds
   volumes: JSON.parse(localGet('st-volumes') || '{}'), // userId -> 0..1
   settings: JSON.parse(localGet('st-settings') || '{}'),
@@ -330,6 +331,10 @@ async function onWs(msg) {
         for (const id of [...S.screens.keys()]) {
           const p = msg.participants.find((x) => x.mediaId === id);
           if (id !== S.voice.mediaId && (!ids.has(id) || (p && !p.sharing))) S.screens.delete(id);
+        }
+        for (const id of [...S.cameras.keys()]) {
+          const p = msg.participants.find((x) => x.mediaId === id);
+          if (id !== S.voice.mediaId && (!ids.has(id) || (p && !p.camera))) S.cameras.delete(id);
         }
       }
       if (msg.serverId === S.serverId) { renderChannels(); renderStage(); }
@@ -979,6 +984,15 @@ function engineCallbacks() {
       renderStage();
       renderChannels();
     },
+    onCamera(mediaId, stream, videoEl) {
+      if (stream) S.cameras.set(mediaId, { stream, el: videoEl || null });
+      else S.cameras.delete(mediaId);
+      renderStage();
+    },
+    onCameraEnded() {
+      if (!S.voice) return;
+      cameraOff();
+    },
     onSpeaking(mediaId, on) {
       if (on) S.speaking.add(mediaId); else S.speaking.delete(mediaId);
       document.querySelectorAll(`[data-media="${CSS.escape(mediaId)}"]`).forEach((n) => n.classList.toggle('speaking', on));
@@ -1024,7 +1038,7 @@ async function joinVoice(channelId) {
       });
   engine.muted = S.muted;
   engine.deafened = S.deafened;
-  S.voice = { serverId: S.serverId, channelId, channelName: ch?.name, engine, mediaId: null, sharing: false, screenStreamId: null };
+  S.voice = { serverId: S.serverId, channelId, channelName: ch?.name, engine, mediaId: null, sharing: false, screenStreamId: null, camera: false, cameraStreamId: null };
   showVoiceView(channelId);
   try {
     const mediaId = await engine.join(channelId);
@@ -1049,6 +1063,7 @@ function leaveVoice() {
   wsSend({ type: 'voice-leave' });
   S.voice = null;
   S.screens.clear();
+  S.cameras.clear();
   S.speaking.clear();
   updateControls();
   renderAll();
@@ -1063,7 +1078,8 @@ function showVoiceView(channelId) {
 
 function sendVoiceState() {
   if (!S.voice) return;
-  wsSend({ type: 'voice-state', muted: S.muted, deafened: S.deafened, sharing: S.voice.sharing, screenStream: S.voice.screenStreamId });
+  wsSend({ type: 'voice-state', muted: S.muted, deafened: S.deafened, sharing: S.voice.sharing, screenStream: S.voice.screenStreamId,
+    camera: S.voice.camera, cameraStream: S.voice.cameraStreamId });
 }
 
 function toggleMute() {
@@ -1104,6 +1120,48 @@ async function toggleShare() {
   }
   if (!navigator.mediaDevices?.getDisplayMedia) return toast('Este navegador não permite compartilhar a tela.');
   $('#dlg-share').showModal();
+}
+
+let cameraBusy = false;
+async function toggleCamera() {
+  if (!S.voice) return toast('Entre num canal de voz primeiro.');
+  if (cameraBusy) return;
+  if (S.voice.camera) {
+    S.voice.engine.stopCamera();
+    cameraOff();
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) return toast('Este navegador não permite usar a câmera.');
+  cameraBusy = true;
+  const voice = S.voice;
+  try {
+    const id = await voice.engine.startCamera({ deviceId: S.settings.camId });
+    if (S.voice !== voice) { voice.engine.stopCamera(); return; }
+    S.voice.camera = true;
+    S.voice.cameraStreamId = id;
+    S.cameras.set(S.voice.mediaId, { stream: S.voice.engine.localCamera, el: null, local: true });
+    sendVoiceState();
+    updateControls();
+    renderStage();
+    renderChannels();
+  } catch (err) {
+    console.error(err);
+    if (err.name === 'NotAllowedError') toast('Sem permissão para usar a câmera.');
+    else if (err.name === 'NotFoundError' || err.name === 'OverconstrainedError') toast('Nenhuma câmera encontrada.');
+    else toast('Não foi possível ligar a câmera.');
+  } finally {
+    cameraBusy = false;
+  }
+}
+
+function cameraOff() {
+  S.voice.camera = false;
+  S.voice.cameraStreamId = null;
+  S.cameras.delete(S.voice.mediaId);
+  sendVoiceState();
+  updateControls();
+  renderStage();
+  renderChannels();
 }
 
 function callbacksShareEnded() {
@@ -1249,6 +1307,7 @@ function voiceUserNode(p) {
   if (S.speaking.has(p.mediaId)) av.classList.add('speaking');
   const icons = el('span', { className: 'icons' });
   if (p.sharing) icons.append(el('span', { className: 'live', textContent: 'AO VIVO' }));
+  if (p.camera) icons.append(el('span', { title: 'Câmera ligada', className: 'state-ic cam-ic' }, iconEl('video', 14)));
   if (p.deafened) icons.append(el('span', { title: 'Áudio desativado', className: 'state-ic' }, iconEl('headphones-off', 14)));
   else if (p.muted) icons.append(el('span', { title: 'Mudo', className: 'state-ic' }, iconEl('mic-off', 14)));
   const li = el('li', { className: 'voice-user' }, av, el('span', { className: 'name', textContent: p.name }), icons);
@@ -1331,7 +1390,7 @@ function renderStage() {
   } else stage.querySelector('.stage-empty')?.remove();
 
   $('#vb-join').classList.toggle('hidden', inThis);
-  for (const id of ['#vb-mic', '#vb-share', '#vb-hangup']) $(id).classList.toggle('hidden', !inThis);
+  for (const id of ['#vb-mic', '#vb-cam', '#vb-share', '#vb-hangup']) $(id).classList.toggle('hidden', !inThis);
 }
 
 function screenTile(mediaId, scr, name) {
@@ -1363,8 +1422,25 @@ function personTile(p) {
   let tile = tiles.get(key);
   if (!tile) {
     tile = el('div', { className: 'tile person' }, el('div', { className: 'avatar' }), el('div', { className: 'label' }));
+    tile.ondblclick = () => tile.classList.contains('has-video') && tile.requestFullscreen?.();
     tiles.set(key, tile);
   }
+  const cam = S.voice?.channelId === S.viewVoiceChannelId ? S.cameras.get(p.mediaId) : null;
+  const shown = cam ? (cam.el || cam.stream) : null;
+  if (tile._cam !== shown) {
+    tile.querySelector('video')?.remove();
+    if (cam) {
+      const video = cam.el || el('video', { autoplay: true, playsInline: true, muted: true });
+      if (!cam.el) video.srcObject = cam.stream;
+      video.muted = true;
+      video.classList.add('cam');
+      video.play?.().catch(() => {});
+      tile.prepend(video);
+    }
+    tile._cam = shown;
+  }
+  tile.classList.toggle('has-video', !!cam);
+  tile.classList.toggle('mirror', !!cam?.local);
   tile.dataset.media = p.mediaId;
   tile.classList.toggle('speaking', S.speaking.has(p.mediaId));
   paintAvatar(tile.querySelector('.avatar'), p.name, p.avatarKey);
@@ -1426,10 +1502,18 @@ function updateControls() {
   d.classList.toggle('off', S.deafened);
   d.title = S.deafened ? 'Ativar áudio' : 'Desativar áudio';
   const sharing = !!S.voice?.sharing;
-  $('#btn-share').innerHTML = icon(sharing ? 'monitor-x' : 'monitor', 16) + (sharing ? ' Parar de compartilhar' : ' Compartilhar tela');
+  $('#btn-share').innerHTML = icon(sharing ? 'monitor-x' : 'monitor', 16) + (sharing ? ' Parar tela' : ' Tela');
+  $('#btn-share').title = sharing ? 'Parar de compartilhar a tela' : 'Compartilhar tela';
   $('#btn-share').classList.toggle('on', sharing);
   $('#vb-share').classList.toggle('on', sharing);
   $('#vb-share').title = sharing ? 'Parar de compartilhar' : 'Compartilhar tela';
+  const cam = !!S.voice?.camera;
+  $('#btn-cam').innerHTML = icon(cam ? 'video-off' : 'video', 16) + (cam ? ' Desligar' : ' Câmera');
+  $('#btn-cam').title = cam ? 'Desligar câmera' : 'Ligar câmera';
+  $('#btn-cam').classList.toggle('on', cam);
+  $('#vb-cam').innerHTML = icon(cam ? 'video' : 'video-off', 20);
+  $('#vb-cam').classList.toggle('on', cam);
+  $('#vb-cam').title = cam ? 'Desligar câmera' : 'Ligar câmera';
   if (S.user) renderMe();
 }
 
@@ -1442,6 +1526,8 @@ $('#vb-mic').onclick = toggleMute;
 $('#btn-deafen').onclick = toggleDeafen;
 $('#btn-share').onclick = toggleShare;
 $('#vb-share').onclick = toggleShare;
+$('#btn-cam').onclick = toggleCamera;
+$('#vb-cam').onclick = toggleCamera;
 $('#btn-hangup').onclick = () => leaveVoice();
 $('#vb-hangup').onclick = () => leaveVoice();
 $('#vb-join').onclick = () => joinVoice(S.viewVoiceChannelId);
@@ -1585,6 +1671,7 @@ $('#btn-settings').onclick = async () => {
       } catch {}
     }
     fillSelect($('#set-mic'), devices.filter((d) => d.kind === 'audioinput'), S.settings.micId);
+    fillSelect($('#set-cam'), devices.filter((d) => d.kind === 'videoinput'), S.settings.camId);
     fillSelect($('#set-speaker'), devices.filter((d) => d.kind === 'audiooutput'), S.settings.speakerId);
     $('#set-speaker').disabled = !('setSinkId' in HTMLMediaElement.prototype);
   } catch {}
@@ -1610,6 +1697,7 @@ $('#dlg-settings').addEventListener('close', async () => {
     StraightTalkMedia.noiseMode(S.settings) !== $('#set-noise').value;
   S.settings.micId = $('#set-mic').value || undefined;
   S.settings.speakerId = $('#set-speaker').value || undefined;
+  S.settings.camId = $('#set-cam').value || undefined;
   S.settings.noiseMode = $('#set-noise').value;
   applyTheme($('#set-theme').value);
   delete S.settings.noiseSuppression;

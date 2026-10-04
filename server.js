@@ -354,6 +354,8 @@ function createApp({
       deafened: c.voice.deafened,
       sharing: c.voice.sharing,
       screenStream: c.voice.screenStream,
+      camera: !!c.voice.camera,
+      cameraStream: c.voice.cameraStream || null,
     }));
   }
 
@@ -407,7 +409,7 @@ function createApp({
         conn.voice = {
           serverId: ch.serverId, channelId: ch.id,
           mediaId: String(msg.mediaId || conn.id).slice(0, 80),
-          muted: !!msg.muted, deafened: !!msg.deafened, sharing: false, screenStream: null,
+          muted: !!msg.muted, deafened: !!msg.deafened, sharing: false, screenStream: null, camera: false, cameraStream: null,
         };
         broadcastVoice(ch.serverId, ch.id);
         break;
@@ -417,8 +419,9 @@ function createApp({
         break;
       case 'voice-state': {
         if (!conn.voice) return;
-        for (const k of ['muted', 'deafened', 'sharing']) if (k in msg) conn.voice[k] = !!msg[k];
+        for (const k of ['muted', 'deafened', 'sharing', 'camera']) if (k in msg) conn.voice[k] = !!msg[k];
         if ('screenStream' in msg) conn.voice.screenStream = msg.screenStream ? String(msg.screenStream).slice(0, 100) : null;
+        if ('cameraStream' in msg) conn.voice.cameraStream = msg.cameraStream ? String(msg.cameraStream).slice(0, 100) : null;
         broadcastVoice(conn.voice.serverId, conn.voice.channelId);
         break;
       }
