@@ -93,9 +93,11 @@
       </header>
       <div id="server-menu" class="menu hidden">
         <button data-act="invite" data-icon="user-plus" data-icon-size="16">Convidar pessoas</button>
-        <button data-act="new-text" class="owner-only" data-icon="hash" data-icon-size="16">Criar canal de texto</button>
-        <button data-act="new-voice" class="owner-only" data-icon="volume" data-icon-size="16">Criar canal de voz</button>
-        <button data-act="rename" class="owner-only" data-icon="edit" data-icon-size="16">Renomear servidor</button>
+        <button data-act="new-text" data-perm="1" data-icon="hash" data-icon-size="16">Criar canal de texto</button>
+        <button data-act="new-voice" data-perm="1" data-icon="volume" data-icon-size="16">Criar canal de voz</button>
+        <button data-act="roles" data-perm="16" data-icon="shield" data-icon-size="16">Cargos e permissões</button>
+        <button data-act="bans" data-perm="8" data-icon="ban" data-icon-size="16">Pessoas banidas</button>
+        <button data-act="rename" data-perm="32" data-icon="edit" data-icon-size="16">Renomear servidor</button>
         <button data-act="delete" class="owner-only danger" data-icon="trash" data-icon-size="16">Apagar servidor</button>
         <button data-act="leave" class="member-only danger" data-icon="phone-off" data-icon-size="16">Sair do servidor</button>
       </div>
@@ -182,6 +184,7 @@
       <section id="view-text" class="view text-view hidden">
         <div id="messages" class="messages"></div>
         <div id="typing" class="typing"></div>
+        <div id="readonly-note" class="readonly-note hidden"></div>
         <form id="chat-form" class="chat-form">
           <div class="chat-tools">
             <button type="button" id="btn-emoticons" class="icon-btn" title="Emoticons" data-icon="smile"><span>Emoticons</span></button>
@@ -257,6 +260,15 @@
       <h3 class="adm-h">Últimos pagamentos</h3>
       <div id="adm-list" class="adm-list"></div>
       <menu><button value="close" class="btn primary">Fechar</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-list" class="dialog dialog-wide">
+    <form method="dialog">
+      <h2 id="list-title"></h2>
+      <p id="list-sub" class="muted small"></p>
+      <div id="list-body" class="adm-list"></div>
+      <menu><button type="button" id="list-extra" class="btn hidden"></button><button value="close" class="btn primary">Fechar</button></menu>
     </form>
   </dialog>
 

@@ -569,7 +569,9 @@ async function onWs(msg) {
       if (msg.serverId === S.serverId) await reloadDetail();
       await refreshServers();
       break;
-    case 'server-removed':
+    case 'server-removed': {
+      const gone = S.servers.find((s) => s.id === msg.serverId);
+      if (gone && msg.reason) toast(msg.reason === 'ban' ? `Você foi banido(a) de ${gone.name}.` : `Você foi expulso(a) de ${gone.name}.`);
       S.servers = S.servers.filter((s) => s.id !== msg.serverId);
       if (S.voice?.serverId === msg.serverId) leaveVoice();
       if (S.serverId === msg.serverId) {
@@ -579,6 +581,7 @@ async function onWs(msg) {
         if (S.servers[0]) await selectServer(S.servers[0].id); else renderAll();
       } else renderRail();
       break;
+    }
     case 'voice-ended':
       if (S.voice) {
         leaveVoice();
@@ -711,6 +714,8 @@ function messageNode(m, prev) {
   }
   if (first) {
     const author = el('span', { className: 'author', textContent: m.author });
+    const color = m.channelId && roleColor(m.userId);
+    if (color) author.style.color = color;
     body.append(el('div', { className: 'head' }, author, el('span', { className: 'time', textContent: fmtTime(m.createdAt) })));
   }
   if (m.pinnedAt) body.append(el('div', { className: 'pinned-label' }, iconEl('pin', 12), ' Fixada'));
@@ -774,7 +779,7 @@ function messageActions(m, node) {
     catch (err) { toast(err.message); }
   });
   if (mine) btn('edit', 'Editar', () => startEdit(m, node));
-  if (mine || (m.channelId && S.detail?.server.ownerId === S.user.id)) {
+  if (mine || (m.channelId && can(P.MESSAGES))) {
     const del = btn('trash', 'Apagar mensagem', async () => {
       if (!(await formDialog({ title: 'Apagar mensagem?', text: preview(m).slice(0, 200), okText: 'Apagar', danger: true }))) return;
       api('DELETE', msgUrl(m)).catch((e) => toast(e.message));
@@ -1659,6 +1664,180 @@ function isOwner() {
   return S.detail && S.detail.server.ownerId === S.user.id;
 }
 
+/* ================= Cargos e permissões ================= */
+
+const P = { CHANNELS: 1, MESSAGES: 2, KICK: 4, BAN: 8, ROLES: 16, SERVER: 32, ADMIN: 64 };
+const PERM_LABELS = [
+  [P.ADMIN, 'Administrador (pode tudo e vê todos os canais)'],
+  [P.SERVER, 'Gerenciar servidor (nome e link de convite)'],
+  [P.CHANNELS, 'Gerenciar canais (criar, apagar, privados)'],
+  [P.ROLES, 'Gerenciar cargos'],
+  [P.MESSAGES, 'Gerenciar mensagens (apagar e escrever em canal só de leitura)'],
+  [P.KICK, 'Expulsar pessoas'],
+  [P.BAN, 'Banir pessoas'],
+];
+
+const can = (perm) => !!S.detail && !!(S.detail.myPerms & perm);
+const rolesById = () => new Map((S.detail?.roles || []).map((r) => [r.id, r]));
+
+// Cargos da pessoa, do mais importante para o menos
+function rolesOf(userId) {
+  const m = S.detail?.members.find((x) => x.id === userId);
+  const byId = rolesById();
+  return (m?.roles || []).map((id) => byId.get(id)).filter(Boolean).sort((a, b) => b.position - a.position);
+}
+const roleColor = (userId) => rolesOf(userId).find((r) => r.color)?.color || null;
+function topPos(userId) {
+  if (userId === S.detail?.server.ownerId) return Infinity;
+  const r = rolesOf(userId)[0];
+  return r ? r.position : -Infinity;
+}
+const outranks = (userId) => userId !== S.detail?.server.ownerId && (isOwner() || topPos(S.user.id) > topPos(userId));
+const canManageRole = (r) => isOwner() || r.position < topPos(S.user.id);
+
+function listDialog(title, sub, fill, extra) {
+  $('#list-title').textContent = title;
+  $('#list-sub').textContent = sub || '';
+  const b = $('#list-extra');
+  b.classList.toggle('hidden', !extra);
+  if (extra) { b.textContent = extra.label; b.onclick = extra.onClick; }
+  fill($('#list-body'));
+  if (!$('#dlg-list').open) $('#dlg-list').showModal();
+}
+
+async function rolesDialog() {
+  if (!S.detail) return;
+  const sid = S.detail.server.id;
+  const roles = [...S.detail.roles].sort((a, b) => b.position - a.position);
+  listDialog('Cargos e permissões', 'Cargos mais acima mandam nos de baixo. Dê cargos às pessoas pelo botão ⋯ na lista de membros.', (box) => {
+    box.innerHTML = '';
+    if (!roles.length) box.append(el('p', { className: 'muted', textContent: 'Nenhum cargo ainda. Crie um, por exemplo "Moderador".' }));
+    roles.forEach((r, i) => {
+      const count = S.detail.members.filter((m) => m.roles.includes(r.id)).length;
+      const perms = PERM_LABELS.filter(([p]) => r.perms & p).map(([, l]) => l.split(' (')[0]).join(', ') || 'Sem permissões (só a cor)';
+      const row = el('div', { className: 'adm-row role-row' },
+        el('span', { className: 'role-dot', style: `background:${r.color || 'var(--muted)'}` }),
+        el('div', { className: 'role-info' }, el('b', { textContent: r.name, style: r.color ? `color:${r.color}` : '' }), el('small', { className: 'muted', textContent: `${count} ${count === 1 ? 'pessoa' : 'pessoas'} · ${perms}` })));
+      if (canManageRole(r)) {
+        const act = (ic, title, fn, cls) => { const b = el('button', { type: 'button', className: 'icon-btn small' + (cls ? ' ' + cls : ''), title }, iconEl(ic, 15)); b.onclick = fn; row.append(b); };
+        if (i > 0 && canManageRole(roles[i - 1])) act('arrow-up', 'Subir', () => roleCall('POST', `/api/roles/${r.id}/move`, { dir: 'up' }));
+        if (i < roles.length - 1) act('arrow-down', 'Descer', () => roleCall('POST', `/api/roles/${r.id}/move`, { dir: 'down' }));
+        act('edit', 'Editar', () => editRole(r));
+        act('trash', 'Apagar cargo', async () => {
+          $('#dlg-list').close();
+          const ok = await formDialog({ title: `Apagar o cargo ${r.name}?`, text: 'Quem tinha esse cargo perde as permissões dele.', okText: 'Apagar', danger: true, onSubmit: () => api('DELETE', `/api/roles/${r.id}`) });
+          if (ok) await reloadDetail();
+          rolesDialog();
+        }, 'danger');
+      }
+      box.append(row);
+    });
+  }, { label: 'Criar cargo', onClick: () => editRole(null, sid) });
+}
+
+async function roleCall(method, url, body) {
+  try { await api(method, url, body); await reloadDetail(); rolesDialog(); } catch (err) { toast(err.message); }
+}
+
+async function editRole(r, sid) {
+  $('#dlg-list').close();
+  const mine = S.detail.myPerms;
+  const res = await formDialog({
+    title: r ? `Editar cargo ${r.name}` : 'Criar cargo',
+    fields: [
+      { name: 'name', label: 'Nome do cargo', value: r?.name || '', placeholder: 'Moderador', maxlength: 30 },
+      { name: 'color', label: 'Cor do nome', type: 'color', value: r?.color || '#e91e63' },
+      { name: 'perms', label: 'Permissões', type: 'checks', options: PERM_LABELS.map(([p, label]) => ({ value: p, label, checked: r ? !!(r.perms & p) : false, disabled: !(mine & p) })) },
+    ],
+    okText: r ? 'Salvar' : 'Criar cargo',
+    onSubmit: (v) => {
+      const body = { name: v.name, color: v.color, perms: v.perms.reduce((a, b) => a | b, 0) };
+      if (r && body.perms === r.perms) delete body.perms;
+      return r ? api('PATCH', `/api/roles/${r.id}`, body) : api('POST', `/api/servers/${sid}/roles`, body);
+    },
+  });
+  if (res) await reloadDetail();
+  rolesDialog();
+}
+
+async function bansDialog() {
+  if (!S.detail) return;
+  const sid = S.detail.server.id;
+  let bans = [];
+  try { ({ bans } = await api('GET', `/api/servers/${sid}/bans`)); } catch (err) { return toast(err.message); }
+  listDialog('Pessoas banidas', 'Quem está aqui não entra no servidor nem com convite novo.', (box) => {
+    box.innerHTML = '';
+    if (!bans.length) box.append(el('p', { className: 'muted', textContent: 'Ninguém banido.' }));
+    for (const b of bans) {
+      const un = el('button', { type: 'button', className: 'btn small', textContent: 'Desbanir' });
+      un.onclick = async () => {
+        try { await api('DELETE', `/api/servers/${sid}/bans/${b.userId}`); toast(`${b.displayName} pode voltar com um convite.`); bansDialog(); } catch (err) { toast(err.message); }
+      };
+      box.append(el('div', { className: 'adm-row role-row' },
+        el('div', { className: 'role-info' }, el('b', { textContent: `${b.displayName} (@${b.username})` }),
+          el('small', { className: 'muted', textContent: `${new Date(b.createdAt).toLocaleDateString('pt-BR')}${b.byName ? ' por ' + b.byName : ''}${b.reason ? ' · ' + b.reason : ''}` })),
+        un));
+    }
+  });
+}
+
+// Menu ⋯ de uma pessoa na lista de membros
+function memberMenu(m, anchor) {
+  document.querySelectorAll('.member-pop').forEach((x) => x.remove());
+  const pop = el('div', { className: 'menu member-pop' });
+  const item = (ic, label, fn, danger) => {
+    const b = el('button', { type: 'button', className: danger ? 'danger' : '' }, iconEl(ic, 16), ' ' + label);
+    b.onclick = (e) => { e.stopPropagation(); pop.remove(); fn(); };
+    pop.append(b);
+  };
+  const sid = S.detail.server.id;
+  if (can(P.ROLES)) item('shield', 'Cargos', async () => {
+    const manageable = [...S.detail.roles].sort((a, b) => b.position - a.position);
+    const r = await formDialog({
+      title: `Cargos de ${m.displayName}`,
+      fields: [{ name: 'roles', label: 'Cargos', type: 'checks', empty: 'Crie cargos no menu do servidor primeiro.',
+        options: manageable.map((r) => ({ value: r.id, label: r.name, color: r.color, checked: m.roles.includes(r.id), disabled: !canManageRole(r) })) }],
+      okText: 'Salvar',
+      onSubmit: (v) => api('PUT', `/api/servers/${sid}/members/${m.id}/roles`, { roleIds: v.roles }),
+    });
+    if (r) reloadDetail();
+  });
+  if (can(P.KICK) && m.id !== S.user.id) item('phone-off', 'Expulsar', async () => {
+    const r = await formDialog({ title: `Expulsar ${m.displayName}?`, text: 'A pessoa sai do servidor, mas pode voltar com um convite.', okText: 'Expulsar', danger: true,
+      onSubmit: () => api('POST', `/api/servers/${sid}/members/${m.id}/kick`) });
+    if (r) toast(`${m.displayName} foi expulso(a).`);
+  }, true);
+  if (can(P.BAN) && m.id !== S.user.id) item('ban', 'Banir', async () => {
+    const r = await formDialog({ title: `Banir ${m.displayName}?`, text: 'A pessoa sai do servidor e não volta nem com convite, até alguém desbanir.',
+      fields: [{ name: 'reason', label: 'Motivo (opcional)', maxlength: 200 }], okText: 'Banir', danger: true,
+      onSubmit: (v) => api('POST', `/api/servers/${sid}/bans`, { userId: m.id, reason: v.reason }) });
+    if (r) toast(`${m.displayName} foi banido(a).`);
+  }, true);
+  if (!pop.children.length) return;
+  const r = anchor.getBoundingClientRect();
+  pop.style.right = Math.max(8, innerWidth - r.right) + 'px';
+  if (r.bottom + 160 > innerHeight) pop.style.bottom = (innerHeight - r.top + 4) + 'px'; else pop.style.top = (r.bottom + 4) + 'px';
+  document.body.append(pop);
+}
+document.addEventListener('click', (e) => { if (!e.target.closest('.member-pop')) document.querySelectorAll('.member-pop').forEach((x) => x.remove()); });
+
+// Configurações de um canal: nome, privado (quais cargos veem) e só leitura
+async function channelSettings(c) {
+  const roles = [...S.detail.roles].sort((a, b) => b.position - a.position);
+  const fields = [
+    { name: 'name', label: 'Nome do canal', value: c.name, maxlength: 40 },
+    { name: 'private', label: 'Canal privado', type: 'checkbox', value: c.private, hint: 'só os cargos marcados abaixo (e administradores) veem' },
+    { name: 'roleIds', label: 'Cargos que veem o canal privado', type: 'checks', empty: 'Crie cargos no menu do servidor para escolher quem vê.',
+      options: roles.map((r) => ({ value: r.id, label: r.name, color: r.color, checked: c.roleIds.includes(r.id) })) },
+  ];
+  if (c.type === 'text') fields.push({ name: 'readonly', label: 'Só leitura', type: 'checkbox', value: c.readonly, hint: 'só quem gerencia mensagens escreve (bom para avisos)' });
+  const r = await formDialog({
+    title: `Configurar ${c.type === 'text' ? '#' : ''}${c.name}`, fields, okText: 'Salvar',
+    onSubmit: (v) => api('PATCH', `/api/channels/${c.id}`, v),
+  });
+  if (r) reloadDetail();
+}
+
 function renderChannels() {
   $('#server-name').textContent = S.detail?.server.name || 'StraightTalk';
   $('#btn-server-menu').classList.toggle('hidden', !S.detail);
@@ -1672,7 +1851,7 @@ function renderChannels() {
 
   for (const c of S.detail.channels.filter((c) => c.type === 'text')) {
     const li = el('li', { className: 'channel' },
-      el('span', { className: 'ch-icon' }, iconEl('hash', 16)),
+      el('span', { className: 'ch-icon', title: c.private ? 'Canal privado' : '' }, iconEl(c.private ? 'lock' : 'hash', 16)),
       el('span', { className: 'ch-name', textContent: c.name }),
       ownerActions(c));
     if (S.view === 'text' && S.textChannel[S.serverId] === c.id) li.classList.add('active');
@@ -1685,7 +1864,7 @@ function renderChannels() {
   const vstate = S.voiceState.get(S.serverId) || {};
   for (const c of S.detail.channels.filter((c) => c.type === 'voice')) {
     const li = el('li', { className: 'channel' },
-      el('span', { className: 'ch-icon' }, iconEl('volume', 16)),
+      el('span', { className: 'ch-icon', title: c.private ? 'Canal privado' : '' }, iconEl(c.private ? 'lock' : 'volume', 16)),
       el('span', { className: 'ch-name', textContent: c.name }),
       ownerActions(c));
     if (S.view === 'voice' && S.viewVoiceChannelId === c.id) li.classList.add('active');
@@ -1708,16 +1887,10 @@ function renderChannels() {
 }
 
 function ownerActions(c) {
-  if (!isOwner()) return null;
+  if (!can(P.CHANNELS)) return null;
   const box = el('span', { className: 'ch-actions' });
-  const ren = el('button', { title: 'Renomear', type: 'button' }, iconEl('edit', 14));
-  ren.onclick = async () => {
-    const r = await formDialog({
-      title: 'Renomear canal', fields: [{ name: 'name', label: 'Nome do canal', value: c.name, maxlength: 40 }], okText: 'Salvar',
-      onSubmit: (v) => api('PATCH', `/api/channels/${c.id}`, { name: v.name }),
-    });
-    if (r) reloadDetail();
-  };
+  const ren = el('button', { title: 'Configurar canal (nome, privado, só leitura)', type: 'button' }, iconEl('settings', 14));
+  ren.onclick = () => channelSettings(c);
   const del = el('button', { title: 'Apagar', type: 'button' }, iconEl('trash', 14));
   del.onclick = async () => {
     const r = await formDialog({
@@ -1773,8 +1946,12 @@ function renderMain() {
   $('#view-voice').classList.toggle('hidden', S.view !== 'voice');
   if (S.view === 'text') {
     const ch = currentChannel();
-    title.replaceChildren(...(ch ? [iconEl('hash', 17), ` ${ch.name}`] : []));
+    title.replaceChildren(...(ch ? [iconEl(ch.private ? 'lock' : 'hash', 17), ` ${ch.name}`] : []));
     input.placeholder = ch ? `Conversar em #${ch.name}` : '';
+    const locked = !!ch?.readonly && !can(P.MESSAGES);
+    $('#chat-form').classList.toggle('hidden', locked);
+    $('#readonly-note').classList.toggle('hidden', !locked);
+    $('#readonly-note').replaceChildren(iconEl('lock', 14), ' Este canal é só de leitura.');
     $('#btn-nudge').title = 'Chamar a atenção de todos na conversa';
     renderMessages();
     renderTypingAndReply();
@@ -1784,6 +1961,8 @@ function renderMain() {
     const st = peerStatus(S.dmUserId);
     title.replaceChildren(iconEl('chat', 17), ` ${name}`, el('span', { className: 'title-status', textContent: STATUS_LABEL[st] || 'Offline' }));
     input.placeholder = `Conversar com ${name}`;
+    $('#chat-form').classList.remove('hidden');
+    $('#readonly-note').classList.add('hidden');
     $('#btn-nudge').title = `Chamar a atenção de ${name}`;
     renderMessages();
     renderTypingAndReply();
@@ -1915,10 +2094,18 @@ function renderMembers() {
       }
       const unread = S.dms.find((c) => c.user.id === m.id)?.unread || 0;
       const me = m.id === S.user.id;
-      const row = el('div', { className: 'member' + (online ? ' online' : '') + (me ? '' : ' clickable'), title: me ? '@' + m.username : `@${m.username}: clique para conversar em particular` }, frame, who,
+      const color = roleColor(m.id);
+      if (color) who.querySelector('.name').style.color = color;
+      const roleNames = rolesOf(m.id).map((r) => r.name).join(', ');
+      const row = el('div', { className: 'member' + (online ? ' online' : '') + (me ? '' : ' clickable'), title: (me ? '@' + m.username : `@${m.username}: clique para conversar em particular`) + (roleNames ? `\nCargos: ${roleNames}` : '') }, frame, who,
         unread ? el('span', { className: 'badge', textContent: unread > 99 ? '99+' : String(unread) }) : null,
         m.id === S.detail.server.ownerId ? el('span', { className: 'crown', title: 'Dono', textContent: '👑' }) : null);
-      if (!me) row.onclick = () => openDm(m.id);
+      if ((can(P.ROLES) || can(P.KICK) || can(P.BAN)) && (outranks(m.id) || (me && can(P.ROLES)))) {
+        const more = el('button', { type: 'button', className: 'icon-btn small member-more', title: 'Moderar' }, iconEl('more', 16));
+        more.onclick = (e) => { e.stopPropagation(); memberMenu(m, more); };
+        row.append(more);
+      }
+      if (!me) row.onclick = (e) => { if (!e.target.closest('.member-pop')) openDm(m.id); };
       if (S.view === 'dm' && S.dmUserId === m.id) row.classList.add('active');
       box.append(row);
     }
@@ -2017,6 +2204,7 @@ $('#btn-server-menu').onclick = (e) => {
   menu.style.top = header.offsetTop + header.offsetHeight + 2 + 'px';
   menu.classList.toggle('hidden');
   menu.querySelectorAll('.owner-only').forEach((b) => b.classList.toggle('hidden', !isOwner()));
+  menu.querySelectorAll('[data-perm]').forEach((b) => b.classList.toggle('hidden', !can(Number(b.dataset.perm))));
   menu.querySelectorAll('.member-only').forEach((b) => b.classList.toggle('hidden', isOwner()));
 };
 document.addEventListener('click', (e) => { if (!e.target.closest('#server-menu')) $('#server-menu').classList.add('hidden'); });
@@ -2027,6 +2215,8 @@ $('#server-menu').onclick = async (e) => {
   $('#server-menu').classList.add('hidden');
   const s = S.detail.server;
   if (act === 'invite') return showInvite(s);
+  if (act === 'roles') return rolesDialog();
+  if (act === 'bans') return bansDialog();
   if (act === 'new-text' || act === 'new-voice') {
     const type = act === 'new-text' ? 'text' : 'voice';
     const r = await formDialog({
@@ -2076,7 +2266,7 @@ async function showInvite(s) {
     text: 'Mande este link. Quem abrir cria uma conta (ou entra) e já cai no servidor.',
     fields: [{ name: 'link', label: 'Link de convite', value: link, readonly: true, copy: true }],
     okText: 'Pronto',
-    extra: s.ownerId === S.user.id ? { label: 'Gerar novo link', danger: false } : undefined,
+    extra: can(P.SERVER) ? { label: 'Gerar novo link', danger: false } : undefined,
   });
   if (r?.extra) {
     const { inviteCode } = await api('POST', `/api/servers/${s.id}/invite`);
@@ -2169,7 +2359,24 @@ function formDialog({ title, text, fields = [], okText = 'OK', danger = false, o
     box.innerHTML = '';
     const inputs = {};
     for (const f of fields) {
+      // Caixinha de marcar (sim/não) e lista de caixinhas (vários valores)
+      if (f.type === 'checkbox') {
+        const cb = el('input', { type: 'checkbox', name: f.name, checked: !!f.value });
+        inputs[f.name] = { get value() { return cb.checked; } };
+        box.append(el('label', { className: 'check-row' }, cb, el('span', {}, f.label, f.hint ? el('small', { className: 'muted', textContent: ' ' + f.hint }) : null)));
+        continue;
+      }
+      if (f.type === 'checks') {
+        const boxes = f.options.map((o) => ({ o, cb: el('input', { type: 'checkbox', checked: !!o.checked, disabled: !!o.disabled }) }));
+        inputs[f.name] = { get value() { return boxes.filter((b) => b.cb.checked).map((b) => b.o.value); } };
+        const list = el('div', { className: 'check-list' }, ...boxes.map(({ o, cb }) => el('label', { className: 'check-row' }, cb,
+          o.color ? el('span', { className: 'role-dot', style: `background:${o.color}` }) : null, el('span', { textContent: o.label }))));
+        box.append(el('div', { className: 'check-group' }, el('div', { className: 'check-title', textContent: f.label }),
+          f.options.length ? list : el('p', { className: 'muted small', textContent: f.empty || 'Nada para escolher.' })));
+        continue;
+      }
       const inp = el('input', { name: f.name, value: f.value || '', placeholder: f.placeholder || '', readOnly: !!f.readonly });
+      if (f.type === 'color') { inp.type = 'color'; inp.value = f.value || '#5865f2'; }
       if (f.maxlength) inp.maxLength = f.maxlength;
       inputs[f.name] = inp;
       let row = inp;
@@ -2225,7 +2432,7 @@ function formDialog({ title, text, fields = [], okText = 'OK', danger = false, o
     dlg.addEventListener('close', onClose);
     dlg.returnValue = '';
     dlg.showModal();
-    const first = Object.values(inputs).find((i) => !i.readOnly);
+    const first = Object.values(inputs).find((i) => i.focus && !i.readOnly);
     if (first) { first.focus(); first.select(); }
   });
 }

@@ -277,6 +277,43 @@ async function resetFixedAccounts() {
   await caio.click('#btn-hangup');
   await bia.waitForFunction(() => document.querySelectorAll('#stage .tile.person').length === 2, null, { timeout: 5000 });
   console.log('sair da voz ok');
+
+  // Moderação: Ana cria o cargo Moderador para a Bia, um canal privado, e a Bia expulsa o Caio
+  await ana.click('#btn-server-menu');
+  await ana.click('[data-act=roles]');
+  await ana.click('#list-extra');
+  await ana.fill('#dlg-fields input[name=name]', 'Moderador');
+  for (const t of ['Expulsar pessoas', 'Banir pessoas', 'Gerenciar mensagens']) await ana.click(`#dlg-fields .check-row >> text=${t}`);
+  await ana.click('#dlg-ok');
+  await ana.waitForSelector('#dlg-list[open] .role-row >> text=Moderador');
+  await ana.waitForTimeout(400);
+  await ana.screenshot({ path: `${OUT}/v2-cargos.png` });
+  await ana.click('#dlg-list button[value=close]');
+  await ana.locator('.member', { hasText: 'Bia' }).locator('.member-more').click();
+  await ana.click('.member-pop button >> text=Cargos');
+  await ana.click('#dlg-fields .check-row >> text=Moderador');
+  await ana.click('#dlg-ok');
+  await bia.waitForFunction(() => S.detail.myPerms === 14, null, { timeout: 10000 });
+  await caio.waitForFunction(() => [...document.querySelectorAll('.member .name')].some((n) => n.textContent.startsWith('Bia') && n.style.color), null, { timeout: 10000 });
+  await ana.click('#btn-server-menu');
+  await ana.click('[data-act=new-text]');
+  await ana.fill('#dlg-fields input', 'equipe');
+  await ana.click('#dlg-ok');
+  await ana.waitForSelector('#text-channels .channel >> text=equipe');
+  await caio.waitForSelector('#text-channels .channel >> text=equipe');
+  await ana.locator('#text-channels .channel', { hasText: 'equipe' }).hover();
+  await ana.locator('#text-channels .channel', { hasText: 'equipe' }).locator('.ch-actions button').first().click();
+  await ana.click('#dlg-fields .check-row >> text=Canal privado');
+  await ana.click('#dlg-ok');
+  await ana.waitForSelector('#text-channels .channel:has-text("equipe") .ch-icon[title="Canal privado"]');
+  await caio.waitForFunction(() => ![...document.querySelectorAll('#text-channels .ch-name')].some((n) => n.textContent === 'equipe'), null, { timeout: 10000 });
+  console.log('cargo e canal privado ok');
+  await bia.locator('.member', { hasText: 'Caio' }).locator('.member-more').click();
+  await bia.click('.member-pop button >> text=Expulsar');
+  await bia.click('#dlg-ok');
+  await caio.waitForSelector('#toast.show >> text=expulso', { timeout: 10000 });
+  await ana.waitForFunction(() => !S.detail.members.some((m) => m.displayName === 'Caio'), null, { timeout: 10000 });
+  console.log('expulsar ok');
   console.log('erros no console:', errors.length ? errors.slice(0, 8) : 'nenhum');
   if (process.env.E2E_CLEANUP) {
     // No site de verdade: apaga o servidor de teste (as contas ana/bia/caio de teste ficam)

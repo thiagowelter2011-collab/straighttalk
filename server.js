@@ -134,14 +134,31 @@ function createApp({
     return s;
   }
 
+  // Exige uma permissão de cargo (o dono e quem é Administrador têm todas)
+  async function requirePerm(serverId, user, perm) {
+    const s = await requireMember(serverId, user);
+    const a = await access(serverId);
+    if (!(permsIn(a, user.id) & perm)) throw new HttpError(403, 'Você não tem permissão para isso.');
+    return { s, a };
+  }
+
   async function channelRow(id) {
-    return await db.get('SELECT id, server_id AS serverId, name, type, position FROM channels WHERE id = ?', id);
+    return await db.get('SELECT id, server_id AS serverId, name, type, position, private, readonly FROM channels WHERE id = ?', id);
+  }
+
+  // Canal que a pessoa pode ver (é do servidor e, se o canal for privado, tem um dos cargos liberados)
+  async function canSee(serverId, channelId, userId) {
+    return (await isMember(serverId, userId)) && seesIn(await access(serverId), userId, channelId);
   }
 
   async function requireChannel(channelId, user) {
     const c = await channelRow(channelId);
-    if (!c || !(await isMember(c.serverId, user.id))) throw new HttpError(404, 'Canal não encontrado.');
+    if (!c || !(await canSee(c.serverId, c.id, user.id))) throw new HttpError(404, 'Canal não encontrado.');
     return c;
+  }
+
+  async function requireWritable(c, user) {
+    if (!canWriteIn(await access(c.serverId), user.id, c.id)) throw new HttpError(403, 'Este canal é só de leitura.');
   }
 
   async function serverIdsOf(userId) {
@@ -156,12 +173,17 @@ function createApp({
 
   async function serverDetail(serverId, viewerId) {
     const s = await serverRow(serverId);
-    const channels = await db.all('SELECT id, name, type, position FROM channels WHERE server_id = ? ORDER BY type DESC, position, id', serverId);
+    const a = await access(serverId);
+    const channels = (await db.all('SELECT id, name, type, position, private, readonly FROM channels WHERE server_id = ? ORDER BY type DESC, position, id', serverId))
+      .filter((c) => seesIn(a, viewerId, c.id))
+      .map((c) => ({ ...c, private: !!c.private, readonly: !!c.readonly, roleIds: [...(a.channels.get(c.id)?.roles || [])] }));
     const members = (await db.all(`SELECT u.id, u.username, u.display_name AS displayName, u.personal_message AS personalMessage, u.avatar_key AS avatarKey
                        FROM members m JOIN users u ON u.id = m.user_id
                        WHERE m.server_id = ? ORDER BY u.display_name COLLATE NOCASE`, serverId))
-      .map((m) => ({ ...m, status: visibleStatus(m.id), online: visibleStatus(m.id) !== 'offline' }));
-    return { server: s, channels, members, voice: voiceSnapshot(serverId) };
+      .map((m) => ({ ...m, status: visibleStatus(m.id), online: visibleStatus(m.id) !== 'offline', roles: [...(a.memberRoles.get(m.id) || [])] }));
+    const voice = {};
+    for (const [chId, list] of Object.entries(voiceSnapshot(serverId))) if (seesIn(a, viewerId, Number(chId))) voice[chId] = list;
+    return { server: s, channels, members, voice, roles: [...a.roles.values()], myPerms: permsIn(a, viewerId) };
   }
 
   async function createServer(name, owner) {
@@ -172,7 +194,7 @@ function createApp({
     await db.run(addCh, id, 'geral', 'text', 0);
     await db.run(addCh, id, 'Bate Papo 1', 'voice', 0);
     await db.run(addCh, id, 'Bate Papo 2', 'voice', 1);
-    memberCache.delete(id);
+    invalidate(id);
     return Number(id);
   }
 
@@ -232,7 +254,7 @@ function createApp({
   // Mensagem de canal que a pessoa pode ver
   async function requireMessage(id, user) {
     const m = await db.get('SELECT m.id, m.user_id, m.file_id, c.server_id, c.id AS channel_id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.id = ?', Number(id));
-    if (!m || !(await isMember(m.server_id, user.id))) throw new HttpError(404, 'Mensagem não encontrada.');
+    if (!m || !(await canSee(m.server_id, m.channel_id, user.id))) throw new HttpError(404, 'Mensagem não encontrada.');
     return m;
   }
 
@@ -386,6 +408,113 @@ function createApp({
     } catch (err) { console.error(err); }
   }
 
+  // Avisos de um canal: canal privado só chega a quem pode vê-lo
+  async function toChannel(serverId, channelId, msg) {
+    try {
+      const members = await membersOf(serverId);
+      const a = await access(serverId);
+      for (const c of conns.values()) if (members.has(c.user.id) && seesIn(a, c.user.id, channelId)) send(c, msg);
+    } catch (err) { console.error(err); }
+  }
+
+  /* ---------------- Cargos e permissões ---------------- */
+
+  const PERMS = { MANAGE_CHANNELS: 1, MANAGE_MESSAGES: 2, KICK: 4, BAN: 8, MANAGE_ROLES: 16, MANAGE_SERVER: 32, ADMIN: 64 };
+  const ALL_PERMS = 127;
+  const accessCache = new Map(); // serverId -> Promise<{ ownerId, roles, memberRoles, channels }>
+
+  function access(serverId) {
+    let p = accessCache.get(serverId);
+    if (!p) {
+      p = (async () => {
+        const s = await db.get('SELECT owner_id FROM servers WHERE id = ?', serverId);
+        const roles = new Map();
+        for (const r of await db.all('SELECT id, name, color, perms, position FROM roles WHERE server_id = ? ORDER BY position DESC, id', serverId)) {
+          roles.set(Number(r.id), { id: Number(r.id), name: r.name, color: r.color || null, perms: Number(r.perms), position: Number(r.position) });
+        }
+        const memberRoles = new Map();
+        for (const r of await db.all('SELECT user_id, role_id FROM member_roles WHERE server_id = ?', serverId)) {
+          if (!roles.has(Number(r.role_id))) continue;
+          if (!memberRoles.has(Number(r.user_id))) memberRoles.set(Number(r.user_id), new Set());
+          memberRoles.get(Number(r.user_id)).add(Number(r.role_id));
+        }
+        const channels = new Map();
+        for (const c of await db.all('SELECT id, private, readonly FROM channels WHERE server_id = ?', serverId)) {
+          channels.set(Number(c.id), { private: !!c.private, readonly: !!c.readonly, roles: new Set() });
+        }
+        for (const r of await db.all('SELECT cr.channel_id, cr.role_id FROM channel_roles cr JOIN channels c ON c.id = cr.channel_id WHERE c.server_id = ?', serverId)) {
+          channels.get(Number(r.channel_id))?.roles.add(Number(r.role_id));
+        }
+        return { ownerId: s ? Number(s.owner_id) : null, roles, memberRoles, channels };
+      })();
+      p.catch(() => accessCache.delete(serverId));
+      accessCache.set(serverId, p);
+    }
+    return p;
+  }
+
+  // Depois de mudar membros, cargos ou canais
+  function invalidate(serverId) {
+    memberCache.delete(serverId);
+    accessCache.delete(serverId);
+  }
+
+  function permsIn(a, userId) {
+    if (userId === a.ownerId) return ALL_PERMS;
+    let p = 0;
+    for (const id of a.memberRoles.get(userId) || []) p |= a.roles.get(id)?.perms || 0;
+    return p & PERMS.ADMIN ? ALL_PERMS : p;
+  }
+
+  // Posição do cargo mais alto (o dono fica acima de todos)
+  function topIn(a, userId) {
+    if (userId === a.ownerId) return Infinity;
+    let top = -Infinity;
+    for (const id of a.memberRoles.get(userId) || []) top = Math.max(top, a.roles.get(id)?.position ?? -Infinity);
+    return top;
+  }
+
+  function seesIn(a, userId, channelId) {
+    const c = a.channels.get(channelId);
+    if (!c || !c.private) return true;
+    if (permsIn(a, userId) & (PERMS.ADMIN | PERMS.MANAGE_CHANNELS)) return true;
+    for (const id of a.memberRoles.get(userId) || []) if (c.roles.has(id)) return true;
+    return false;
+  }
+
+  function canWriteIn(a, userId, channelId) {
+    if (!seesIn(a, userId, channelId)) return false;
+    return !a.channels.get(channelId)?.readonly || !!(permsIn(a, userId) & PERMS.MANAGE_MESSAGES);
+  }
+
+  // Só se mexe em cargos abaixo do seu e em pessoas abaixo de você
+  const canManageRole = (a, actorId, role) => actorId === a.ownerId || role.position < topIn(a, actorId);
+  const outranks = (a, actorId, targetId) => targetId !== a.ownerId && (actorId === a.ownerId || topIn(a, actorId) > topIn(a, targetId));
+
+  // Quem perdeu acesso a um canal de voz privado sai dele
+  async function recheckVoice(serverId) {
+    const a = await access(serverId);
+    for (const c of conns.values()) {
+      if (c.voice?.serverId === serverId && !seesIn(a, c.user.id, c.voice.channelId)) { leaveVoice(c); send(c, { type: 'voice-ended' }); }
+    }
+  }
+
+  // Tira alguém do servidor (sair, expulsar ou banir)
+  async function removeMember(serverId, userId, reason) {
+    kickFromServer(serverId, userId);
+    await db.run('DELETE FROM members WHERE server_id = ? AND user_id = ?', serverId, userId);
+    await db.run('DELETE FROM member_roles WHERE server_id = ? AND user_id = ?', serverId, userId);
+    invalidate(serverId);
+    toUser(userId, { type: 'server-removed', serverId, reason });
+    toServer(serverId, { type: 'server-update', serverId });
+  }
+
+  async function serverChanged(serverId) {
+    invalidate(serverId);
+    toServer(serverId, { type: 'server-update', serverId });
+    await recheckVoice(serverId);
+  }
+
   function toUser(userId, msg) {
     for (const c of conns.values()) if (c.user.id === userId) send(c, msg);
   }
@@ -415,7 +544,7 @@ function createApp({
   }
 
   function broadcastVoice(serverId, channelId) {
-    toServer(serverId, { type: 'voice', serverId, channelId, participants: voiceParticipants(channelId) });
+    toChannel(serverId, channelId, { type: 'voice', serverId, channelId, participants: voiceParticipants(channelId) });
   }
 
   function leaveVoice(conn) {
@@ -446,7 +575,7 @@ function createApp({
     switch (msg.type) {
       case 'voice-join': {
         const ch = await channelRow(Number(msg.channelId));
-        if (!ch || ch.type !== 'voice' || !(await isMember(ch.serverId, conn.user.id))) return;
+        if (!ch || ch.type !== 'voice' || !(await canSee(ch.serverId, ch.id, conn.user.id))) return;
         if (!conns.has(conn.id)) return; // a conexão caiu enquanto esperávamos o banco
         // Uma pessoa só fica em um canal de voz por vez (como no Discord)
         for (const c of conns.values()) {
@@ -501,11 +630,11 @@ function createApp({
           return;
         }
         const ch = await channelRow(Number(msg.channelId));
-        if (!ch || ch.type !== 'text' || !(await isMember(ch.serverId, conn.user.id))) return;
+        if (!ch || ch.type !== 'text' || !(await canSee(ch.serverId, ch.id, conn.user.id)) || !canWriteIn(await access(ch.serverId), conn.user.id, ch.id)) return;
         const t = now();
         if (t - (lastNudge.get(conn.user.id) || 0) < 8000) return send(conn, { type: 'nudge-wait' });
         lastNudge.set(conn.user.id, t);
-        toServer(ch.serverId, { type: 'nudge', serverId: ch.serverId, channelId: ch.id, userId: conn.user.id, name: conn.user.displayName });
+        toChannel(ch.serverId, ch.id, { type: 'nudge', serverId: ch.serverId, channelId: ch.id, userId: conn.user.id, name: conn.user.displayName });
         break;
       }
       case 'typing': {
@@ -515,8 +644,8 @@ function createApp({
           return;
         }
         const ch = await channelRow(Number(msg.channelId));
-        if (!ch || ch.type !== 'text' || !(await isMember(ch.serverId, conn.user.id))) return;
-        toServer(ch.serverId, { type: 'typing', channelId: ch.id, userId: conn.user.id, name: conn.user.displayName });
+        if (!ch || ch.type !== 'text' || !(await canSee(ch.serverId, ch.id, conn.user.id)) || !canWriteIn(await access(ch.serverId), conn.user.id, ch.id)) return;
+        toChannel(ch.serverId, ch.id, { type: 'typing', channelId: ch.id, userId: conn.user.id, name: conn.user.displayName });
         break;
       }
     }
@@ -718,7 +847,7 @@ function createApp({
   });
 
   route('PATCH', '/api/servers/:id', async ({ user, params, body }) => {
-    const s = await requireOwner(Number(params.id), user);
+    const { s } = await requirePerm(Number(params.id), user, PERMS.MANAGE_SERVER);
     await db.run('UPDATE servers SET name = ? WHERE id = ?', cleanName(body.name, 50, 'Nome do servidor'), s.id);
     toServer(s.id, { type: 'server-update', serverId: s.id });
     return { ok: true };
@@ -732,10 +861,14 @@ function createApp({
     await deleteFiles((await db.all('SELECT file_id AS id FROM messages WHERE file_id IS NOT NULL AND channel_id IN (SELECT id FROM channels WHERE server_id = ?)', s.id)).map((r) => r.id));
     await db.run("DELETE FROM reactions WHERE kind = 'c' AND message_id IN (SELECT id FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE server_id = ?))", s.id);
     await db.run('DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE server_id = ?)', s.id);
+    await db.run('DELETE FROM channel_roles WHERE channel_id IN (SELECT id FROM channels WHERE server_id = ?)', s.id);
     await db.run('DELETE FROM channels WHERE server_id = ?', s.id);
+    await db.run('DELETE FROM member_roles WHERE server_id = ?', s.id);
+    await db.run('DELETE FROM roles WHERE server_id = ?', s.id);
+    await db.run('DELETE FROM bans WHERE server_id = ?', s.id);
     await db.run('DELETE FROM members WHERE server_id = ?', s.id);
     await db.run('DELETE FROM servers WHERE id = ?', s.id);
-    memberCache.delete(s.id);
+    invalidate(s.id);
     for (const uid of memberIds) toUser(uid, { type: 'server-removed', serverId: s.id });
     return { ok: true };
   });
@@ -743,50 +876,57 @@ function createApp({
   route('POST', '/api/servers/:id/leave', async ({ user, params }) => {
     const s = await requireMember(Number(params.id), user);
     if (s.ownerId === user.id) throw new HttpError(400, 'O dono não pode sair. Apague o servidor.');
-    kickFromServer(s.id, user.id);
-    await db.run('DELETE FROM members WHERE server_id = ? AND user_id = ?', s.id, user.id);
-    memberCache.delete(s.id);
-    toUser(user.id, { type: 'server-removed', serverId: s.id });
-    toServer(s.id, { type: 'server-update', serverId: s.id });
+    await removeMember(s.id, user.id);
     return { ok: true };
   });
 
   route('POST', '/api/servers/:id/invite', async ({ user, params }) => {
-    const s = await requireOwner(Number(params.id), user);
+    const { s } = await requirePerm(Number(params.id), user, PERMS.MANAGE_SERVER);
     const code = inviteCode();
     await db.run('UPDATE servers SET invite_code = ? WHERE id = ?', code, s.id);
     return { inviteCode: code };
   });
 
   route('POST', '/api/servers/:id/channels', async ({ user, params, body }) => {
-    const s = await requireOwner(Number(params.id), user);
+    const { s } = await requirePerm(Number(params.id), user, PERMS.MANAGE_CHANNELS);
     const type = body.type === 'voice' ? 'voice' : 'text';
     const count = (await db.get('SELECT COUNT(*) AS n FROM channels WHERE server_id = ?', s.id)).n;
     if (count >= 100) throw new HttpError(400, 'Limite de 100 canais.');
     const pos = (await db.get('SELECT COALESCE(MAX(position), -1) + 1 AS p FROM channels WHERE server_id = ? AND type = ?', s.id, type)).p;
     const { lastInsertRowid } = await db.run('INSERT INTO channels (server_id, name, type, position) VALUES (?, ?, ?, ?)', s.id, cleanChannelName(body.name, type), type, pos);
+    invalidate(s.id);
     toServer(s.id, { type: 'server-update', serverId: s.id });
     return channelRow(lastInsertRowid);
   });
 
+  // Renomear, tornar privado (só alguns cargos veem) ou só de leitura
   route('PATCH', '/api/channels/:id', async ({ user, params, body }) => {
     const c = await requireChannel(Number(params.id), user);
-    await requireOwner(c.serverId, user);
-    await db.run('UPDATE channels SET name = ? WHERE id = ?', cleanChannelName(body.name, c.type), c.id);
-    toServer(c.serverId, { type: 'server-update', serverId: c.serverId });
+    const { a } = await requirePerm(c.serverId, user, PERMS.MANAGE_CHANNELS);
+    if ('name' in body) await db.run('UPDATE channels SET name = ? WHERE id = ?', cleanChannelName(body.name, c.type), c.id);
+    if ('private' in body) await db.run('UPDATE channels SET private = ? WHERE id = ?', body.private ? 1 : 0, c.id);
+    if ('readonly' in body) await db.run('UPDATE channels SET readonly = ? WHERE id = ?', body.readonly && c.type === 'text' ? 1 : 0, c.id);
+    if ('roleIds' in body) {
+      const ids = roleIdsIn(a, body.roleIds);
+      await db.run('DELETE FROM channel_roles WHERE channel_id = ?', c.id);
+      for (const id of ids) await db.run('INSERT OR IGNORE INTO channel_roles (channel_id, role_id) VALUES (?, ?)', c.id, id);
+    }
+    await serverChanged(c.serverId);
     return { ok: true };
   });
 
   route('DELETE', '/api/channels/:id', async ({ user, params }) => {
     const c = await requireChannel(Number(params.id), user);
-    await requireOwner(c.serverId, user);
+    await requirePerm(c.serverId, user, PERMS.MANAGE_CHANNELS);
     for (const conn of conns.values()) {
       if (conn.voice?.channelId === c.id) { conn.voice = null; send(conn, { type: 'voice-ended' }); }
     }
     await deleteFiles((await db.all('SELECT file_id AS id FROM messages WHERE file_id IS NOT NULL AND channel_id = ?', c.id)).map((r) => r.id));
     await db.run("DELETE FROM reactions WHERE kind = 'c' AND message_id IN (SELECT id FROM messages WHERE channel_id = ?)", c.id);
     await db.run('DELETE FROM messages WHERE channel_id = ?', c.id);
+    await db.run('DELETE FROM channel_roles WHERE channel_id = ?', c.id);
     await db.run('DELETE FROM channels WHERE id = ?', c.id);
+    invalidate(c.serverId);
     toServer(c.serverId, { type: 'server-update', serverId: c.serverId });
     return { ok: true };
   });
@@ -802,11 +942,144 @@ function createApp({
     const s = await db.get('SELECT id FROM servers WHERE invite_code = ?', params.code);
     if (!s) throw new HttpError(404, 'Convite inválido ou expirado.');
     if (!(await isMember(s.id, user.id))) {
+      if (await db.get('SELECT 1 FROM bans WHERE server_id = ? AND user_id = ?', s.id, user.id)) throw new HttpError(403, 'Você foi banido deste servidor.');
       await db.run('INSERT OR IGNORE INTO members (server_id, user_id, joined_at) VALUES (?, ?, ?)', s.id, user.id, now());
-      memberCache.delete(s.id);
+      invalidate(s.id);
       toServer(s.id, { type: 'server-update', serverId: s.id });
     }
     return { serverId: s.id };
+  });
+
+  /* ---------------- Moderação: cargos, expulsar e banir ---------------- */
+
+  function roleIdsIn(a, ids) {
+    if (!Array.isArray(ids) || ids.length > 50) throw new HttpError(400, 'Lista de cargos inválida.');
+    const out = [...new Set(ids.map(Number))];
+    if (out.some((id) => !a.roles.has(id))) throw new HttpError(400, 'Cargo não encontrado.');
+    return out;
+  }
+
+  function cleanColor(v) {
+    if (v == null || v === '') return null;
+    if (!/^#[0-9a-f]{6}$/i.test(String(v))) throw new HttpError(400, 'Cor inválida.');
+    return String(v).toLowerCase();
+  }
+
+  // Ninguém dá a um cargo permissões que não tem
+  function cleanPerms(a, user, v) {
+    const p = Number(v) || 0;
+    if (p < 0 || p > ALL_PERMS || p !== Math.floor(p)) throw new HttpError(400, 'Permissões inválidas.');
+    if (p & ~permsIn(a, user.id)) throw new HttpError(403, 'Você não pode dar permissões que não tem.');
+    return p;
+  }
+
+  async function requireRole(id, user) {
+    const r = await db.get('SELECT id, server_id AS serverId FROM roles WHERE id = ?', Number(id));
+    if (!r) throw new HttpError(404, 'Cargo não encontrado.');
+    const { a } = await requirePerm(r.serverId, user, PERMS.MANAGE_ROLES);
+    const role = a.roles.get(Number(r.id));
+    if (!canManageRole(a, user.id, role)) throw new HttpError(403, 'Esse cargo está acima do seu.');
+    return { a, role, serverId: r.serverId };
+  }
+
+  // Cargo novo entra por último na lista (abaixo de todos)
+  route('POST', '/api/servers/:id/roles', async ({ user, params, body }) => {
+    const { s, a } = await requirePerm(Number(params.id), user, PERMS.MANAGE_ROLES);
+    if (a.roles.size >= 50) throw new HttpError(400, 'Limite de 50 cargos.');
+    const pos = Math.min(0, ...[...a.roles.values()].map((r) => r.position)) - 1;
+    const { lastInsertRowid } = await db.run('INSERT INTO roles (server_id, name, color, perms, position) VALUES (?, ?, ?, ?, ?)',
+      s.id, cleanName(body.name, 30, 'Nome do cargo'), cleanColor(body.color), cleanPerms(a, user, body.perms), pos);
+    await serverChanged(s.id);
+    return { id: Number(lastInsertRowid) };
+  });
+
+  route('PATCH', '/api/roles/:id', async ({ user, params, body }) => {
+    const { a, role, serverId } = await requireRole(params.id, user);
+    if ('name' in body) await db.run('UPDATE roles SET name = ? WHERE id = ?', cleanName(body.name, 30, 'Nome do cargo'), role.id);
+    if ('color' in body) await db.run('UPDATE roles SET color = ? WHERE id = ?', cleanColor(body.color), role.id);
+    if ('perms' in body) await db.run('UPDATE roles SET perms = ? WHERE id = ?', cleanPerms(a, user, body.perms), role.id);
+    await serverChanged(serverId);
+    return { ok: true };
+  });
+
+  // Sobe ou desce o cargo na lista (troca de lugar com o vizinho)
+  route('POST', '/api/roles/:id/move', async ({ user, params, body }) => {
+    const { a, role, serverId } = await requireRole(params.id, user);
+    const list = [...a.roles.values()].sort((x, y) => y.position - x.position || x.id - y.id);
+    const i = list.findIndex((r) => r.id === role.id);
+    const other = list[body.dir === 'up' ? i - 1 : i + 1];
+    if (!other) return { ok: true };
+    if (!canManageRole(a, user.id, other)) throw new HttpError(403, 'Esse cargo está acima do seu.');
+    const [p1, p2] = other.position === role.position ? [role.position + (body.dir === 'up' ? 1 : -1), role.position] : [other.position, role.position];
+    await db.run('UPDATE roles SET position = ? WHERE id = ?', p1, role.id);
+    await db.run('UPDATE roles SET position = ? WHERE id = ?', p2, other.id);
+    await serverChanged(serverId);
+    return { ok: true };
+  });
+
+  route('DELETE', '/api/roles/:id', async ({ user, params }) => {
+    const { role, serverId } = await requireRole(params.id, user);
+    await db.run('DELETE FROM member_roles WHERE role_id = ?', role.id);
+    await db.run('DELETE FROM channel_roles WHERE role_id = ?', role.id);
+    await db.run('DELETE FROM roles WHERE id = ?', role.id);
+    await serverChanged(serverId);
+    return { ok: true };
+  });
+
+  // Define os cargos de uma pessoa (só mexe nos cargos abaixo do seu)
+  route('PUT', '/api/servers/:id/members/:userId/roles', async ({ user, params, body }) => {
+    const { s, a } = await requirePerm(Number(params.id), user, PERMS.MANAGE_ROLES);
+    const target = Number(params.userId);
+    if (!(await isMember(s.id, target))) throw new HttpError(404, 'Essa pessoa não está no servidor.');
+    if (target !== user.id && !outranks(a, user.id, target)) throw new HttpError(403, 'Essa pessoa está acima de você.');
+    const want = new Set(roleIdsIn(a, body.roleIds));
+    const have = a.memberRoles.get(target) || new Set();
+    const changed = [...want].filter((id) => !have.has(id)).concat([...have].filter((id) => !want.has(id)));
+    if (changed.some((id) => !canManageRole(a, user.id, a.roles.get(id)))) throw new HttpError(403, 'Esse cargo está acima do seu.');
+    for (const id of changed) {
+      if (want.has(id)) await db.run('INSERT OR IGNORE INTO member_roles (server_id, user_id, role_id) VALUES (?, ?, ?)', s.id, target, id);
+      else await db.run('DELETE FROM member_roles WHERE server_id = ? AND user_id = ? AND role_id = ?', s.id, target, id);
+    }
+    await serverChanged(s.id);
+    return { ok: true };
+  });
+
+  async function requireTarget(serverId, user, perm, userId) {
+    const { s, a } = await requirePerm(serverId, user, perm);
+    const target = Number(userId);
+    if (target === user.id) throw new HttpError(400, 'Você não pode fazer isso com você mesmo.');
+    if (!(await isMember(s.id, target))) throw new HttpError(404, 'Essa pessoa não está no servidor.');
+    if (!outranks(a, user.id, target)) throw new HttpError(403, 'Essa pessoa está acima de você.');
+    return { s, target };
+  }
+
+  route('POST', '/api/servers/:id/members/:userId/kick', async ({ user, params }) => {
+    const { s, target } = await requireTarget(Number(params.id), user, PERMS.KICK, params.userId);
+    await removeMember(s.id, target, 'kick');
+    return { ok: true };
+  });
+
+  // Banir: sai do servidor e não volta nem com convite novo
+  route('POST', '/api/servers/:id/bans', async ({ user, params, body }) => {
+    const { s, target } = await requireTarget(Number(params.id), user, PERMS.BAN, body.userId);
+    const reason = String(body.reason || '').trim().slice(0, 200);
+    await db.run('INSERT OR REPLACE INTO bans (server_id, user_id, by_id, reason, created_at) VALUES (?, ?, ?, ?, ?)', s.id, target, user.id, reason, now());
+    await removeMember(s.id, target, 'ban');
+    return { ok: true };
+  });
+
+  route('GET', '/api/servers/:id/bans', async ({ user, params }) => {
+    const { s } = await requirePerm(Number(params.id), user, PERMS.BAN);
+    const rows = await db.all(`SELECT b.user_id AS userId, b.reason, b.created_at AS createdAt, u.username, u.display_name AS displayName, bu.display_name AS byName
+      FROM bans b JOIN users u ON u.id = b.user_id LEFT JOIN users bu ON bu.id = b.by_id
+      WHERE b.server_id = ? ORDER BY b.created_at DESC LIMIT 500`, s.id);
+    return { bans: rows };
+  });
+
+  route('DELETE', '/api/servers/:id/bans/:userId', async ({ user, params }) => {
+    const { s } = await requirePerm(Number(params.id), user, PERMS.BAN);
+    await db.run('DELETE FROM bans WHERE server_id = ? AND user_id = ?', s.id, Number(params.userId));
+    return { ok: true };
   });
 
   route('GET', '/api/channels/:id/messages', async ({ user, params, query }) => {
@@ -821,6 +1094,7 @@ function createApp({
   route('POST', '/api/channels/:id/messages', async ({ user, params, body }) => {
     const c = await requireChannel(Number(params.id), user);
     if (c.type !== 'text') throw new HttpError(400, 'Canal de voz não tem mensagens.');
+    await requireWritable(c, user);
     const file = await claimFile(body.fileKey, user);
     const text = cleanText(body, file);
     let replyTo = null;
@@ -831,7 +1105,7 @@ function createApp({
     }
     const { lastInsertRowid } = await db.run('INSERT INTO messages (channel_id, user_id, text, file_id, reply_to, created_at) VALUES (?, ?, ?, ?, ?, ?)', c.id, user.id, text, file?.id ?? null, replyTo, now());
     const message = await loadMessage(lastInsertRowid);
-    toServer(c.serverId, { type: 'message', serverId: c.serverId, message });
+    toChannel(c.serverId, c.id, { type: 'message', serverId: c.serverId, message });
     return message;
   });
 
@@ -843,20 +1117,21 @@ function createApp({
     if (!text && !m.file_id) throw new HttpError(400, 'Mensagem vazia. Para tirar, apague a mensagem.');
     await db.run('UPDATE messages SET text = ?, edited_at = ? WHERE id = ?', text, now(), m.id);
     const message = await loadMessage(m.id);
-    toServer(m.server_id, { type: 'message-updated', serverId: m.server_id, message });
+    toChannel(m.server_id, m.channel_id, { type: 'message-updated', serverId: m.server_id, message });
     return message;
   });
 
-  // Fixar ou desafixar: qualquer pessoa do canal (ainda não há cargos)
+  // Fixar ou desafixar: quem pode escrever no canal
   route('POST', '/api/messages/:id/pin', async ({ user, params, body }) => {
     const m = await requireMessage(params.id, user);
+    await requireWritable({ serverId: m.server_id, id: m.channel_id }, user);
     if (body.pinned) {
       const n = await db.get('SELECT COUNT(*) AS n FROM messages WHERE channel_id = ? AND pinned_at IS NOT NULL', m.channel_id);
       if (Number(n.n) >= 50) throw new HttpError(400, 'Este canal já tem 50 mensagens fixadas. Desafixe alguma antes.');
     }
     await db.run('UPDATE messages SET pinned_at = ? WHERE id = ?', body.pinned ? now() : null, m.id);
     const message = await loadMessage(m.id);
-    toServer(m.server_id, { type: 'message-updated', serverId: m.server_id, message });
+    toChannel(m.server_id, m.channel_id, { type: 'message-updated', serverId: m.server_id, message });
     return message;
   });
 
@@ -879,25 +1154,26 @@ function createApp({
     await requireMember(serverId, user);
     const like = likeArg(query.get('q'));
     const rows = await db.all(`${MSG_SELECT} JOIN channels ch ON ch.id = m.channel_id
-      WHERE ch.server_id = ? AND (m.text LIKE ? ESCAPE '\\' OR f.name LIKE ? ESCAPE '\\') ORDER BY m.id DESC LIMIT 50`, serverId, like, like);
-    return { messages: rows.map(messagePayload) };
+      WHERE ch.server_id = ? AND (m.text LIKE ? ESCAPE '\\' OR f.name LIKE ? ESCAPE '\\') ORDER BY m.id DESC LIMIT 200`, serverId, like, like);
+    const a = await access(serverId);
+    return { messages: rows.filter((r) => seesIn(a, user.id, r.channel_id)).slice(0, 50).map(messagePayload) };
   });
 
   route('POST', '/api/messages/:id/reactions', async ({ user, params, body }) => {
     const m = await requireMessage(params.id, user);
     await toggleReaction('c', m.id, user, cleanEmoji(body.emoji));
     const message = await loadMessage(m.id);
-    toServer(m.server_id, { type: 'message-updated', serverId: m.server_id, message });
+    toChannel(m.server_id, m.channel_id, { type: 'message-updated', serverId: m.server_id, message });
     return message;
   });
 
   route('DELETE', '/api/messages/:id', async ({ user, params }) => {
     const m = await requireMessage(params.id, user);
-    if (m.user_id !== user.id && (await serverRow(m.server_id)).ownerId !== user.id) throw new HttpError(403, 'Você não pode apagar essa mensagem.');
+    if (m.user_id !== user.id && !(permsIn(await access(m.server_id), user.id) & PERMS.MANAGE_MESSAGES)) throw new HttpError(403, 'Você não pode apagar essa mensagem.');
     await db.run('DELETE FROM messages WHERE id = ?', m.id);
     await db.run("DELETE FROM reactions WHERE kind = 'c' AND message_id = ?", m.id);
     await deleteFiles([m.file_id]);
-    toServer(m.server_id, { type: 'message-deleted', serverId: m.server_id, channelId: m.channel_id, messageId: m.id });
+    toChannel(m.server_id, m.channel_id, { type: 'message-deleted', serverId: m.server_id, channelId: m.channel_id, messageId: m.id });
     return { ok: true };
   });
 

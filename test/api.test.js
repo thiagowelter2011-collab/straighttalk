@@ -567,6 +567,116 @@ test('link para baixar o app do Windows', async () => {
   assert.match(p.headers.get('location'), /StraightTalk-portatil\.exe$/);
 });
 
+test('moderação: cargos, canal privado e só leitura, expulsar e banir', async () => {
+  const { data: s } = await call('POST', '/api/servers', { name: 'Moderado' }, ana);
+  const sid = s.server.id, code = s.server.inviteCode;
+  const geral = s.channels.find((c) => c.type === 'text').id;
+  const reg = async (u) => {
+    const { token } = (await call('POST', '/api/register', { username: u, password: '123456' })).data;
+    return { token, user: (await call('GET', '/api/me', null, token)).data.user };
+  };
+  const mod = await reg('moderador'), zeca = await reg('zeca'), lia = await reg('lia');
+  for (const t of [mod.token, zeca.token, lia.token]) assert.equal((await call('POST', `/api/invites/${code}`, null, t)).status, 200);
+
+  // Sem cargo: não cria canal, não expulsa
+  let r = await call('POST', `/api/servers/${sid}/channels`, { name: 'x' }, mod.token);
+  assert.equal(r.status, 403);
+  r = await call('POST', `/api/servers/${sid}/members/${zeca.user.id}/kick`, null, mod.token);
+  assert.equal(r.status, 403);
+
+  // Cargo Moderador: expulsar, banir e gerenciar mensagens
+  r = await call('POST', `/api/servers/${sid}/roles`, { name: 'Moderador', color: '#e91e63', perms: 2 | 4 | 8 }, ana);
+  assert.equal(r.status, 200);
+  const modRole = r.data.id;
+  r = await call('POST', `/api/servers/${sid}/roles`, { name: 'Cor', color: 'vermelho' }, ana);
+  assert.equal(r.status, 400, 'cor inválida');
+  r = await call('PUT', `/api/servers/${sid}/members/${mod.user.id}/roles`, { roleIds: [modRole] }, ana);
+  assert.equal(r.status, 200);
+  r = await call('GET', `/api/servers/${sid}`, null, mod.token);
+  assert.equal(r.data.myPerms, 14);
+  assert.deepEqual(r.data.members.find((m) => m.id === mod.user.id).roles, [modRole]);
+  assert.equal(r.data.roles[0].color, '#e91e63');
+
+  // Moderador não dá permissão que não tem, nem mexe no próprio cargo
+  r = await call('POST', `/api/servers/${sid}/roles`, { name: 'Chefe', perms: 64 }, mod.token);
+  assert.equal(r.status, 403);
+  r = await call('PATCH', `/api/roles/${modRole}`, { perms: 127 }, ana);
+  assert.equal(r.status, 200, 'o dono pode tudo');
+  r = await call('PATCH', `/api/roles/${modRole}`, { perms: 14 }, mod.token);
+  assert.equal(r.status, 403, 'cargo dele não está abaixo dele');
+  await call('PATCH', `/api/roles/${modRole}`, { perms: 2 | 4 | 8 | 16 }, ana);
+  r = await call('POST', `/api/servers/${sid}/roles`, { name: 'Ajudante', perms: 2 }, mod.token);
+  assert.equal(r.status, 200, 'cargo novo abaixo do dele');
+  const helper = r.data.id;
+  r = await call('POST', `/api/roles/${helper}/move`, { dir: 'up' }, mod.token);
+  assert.equal(r.status, 403, 'não passa acima do próprio cargo');
+  r = await call('PUT', `/api/servers/${sid}/members/${lia.user.id}/roles`, { roleIds: [helper] }, mod.token);
+  assert.equal(r.status, 200);
+  r = await call('PUT', `/api/servers/${sid}/members/${lia.user.id}/roles`, { roleIds: [helper, modRole] }, mod.token);
+  assert.equal(r.status, 403, 'não dá o próprio cargo');
+
+  // Canal privado: só Ajudante (e dono) veem; avisos não vazam
+  const { data: priv } = await call('POST', `/api/servers/${sid}/channels`, { name: 'equipe' }, ana);
+  r = await call('PATCH', `/api/channels/${priv.id}`, { private: true, roleIds: [helper] }, ana);
+  assert.equal(r.status, 200);
+  const zs = await socket(zeca.token), ls = await socket(lia.token);
+  r = await call('GET', `/api/servers/${sid}`, null, zeca.token);
+  assert.ok(!r.data.channels.some((c) => c.id === priv.id), 'zeca não vê o canal privado');
+  assert.equal((await call('GET', `/api/channels/${priv.id}/messages`, null, zeca.token)).status, 404);
+  assert.equal((await call('POST', `/api/channels/${priv.id}/messages`, { text: 'oi' }, zeca.token)).status, 404);
+  r = await call('GET', `/api/servers/${sid}`, null, lia.token);
+  assert.ok(r.data.channels.find((c) => c.id === priv.id).private);
+  await call('POST', `/api/channels/${priv.id}/messages`, { text: 'segredo da equipe' }, lia.token);
+  await ls.wait((m) => m.type === 'message' && m.message.text === 'segredo da equipe');
+  await call('POST', `/api/channels/${geral}/messages`, { text: 'mensagem aberta' }, ana);
+  await zs.wait((m) => m.type === 'message' && m.message.text === 'mensagem aberta');
+  assert.ok(!zs.inbox.some((m) => m.type === 'message' && m.message.text === 'segredo da equipe'), 'aviso do canal privado não chega');
+  r = await call('GET', `/api/servers/${sid}/search?q=segredo`, null, zeca.token);
+  assert.equal(r.data.messages.length, 0, 'busca não mostra canal privado');
+
+  // Só leitura: zeca não escreve, moderador sim
+  await call('PATCH', `/api/channels/${geral}`, { readonly: true }, ana);
+  assert.equal((await call('POST', `/api/channels/${geral}/messages`, { text: 'posso?' }, zeca.token)).status, 403);
+  assert.equal((await call('POST', `/api/channels/${geral}/messages`, { text: 'aviso' }, mod.token)).status, 200);
+  await call('PATCH', `/api/channels/${geral}`, { readonly: false }, ana);
+
+  // Moderador apaga mensagem dos outros
+  const { data: msg } = await call('POST', `/api/channels/${geral}/messages`, { text: 'spam' }, zeca.token);
+  assert.equal((await call('DELETE', `/api/messages/${msg.id}`, null, lia.token)).status, 200, 'Ajudante gerencia mensagens');
+
+  // Hierarquia: ninguém mexe no dono nem em quem está acima
+  assert.equal((await call('POST', `/api/servers/${sid}/members/${s.server.ownerId}/kick`, null, mod.token)).status, 403);
+  assert.equal((await call('POST', `/api/servers/${sid}/members/${mod.user.id}/kick`, null, lia.token)).status, 403);
+
+  // Expulsar: sai, recebe aviso e pode voltar pelo convite
+  r = await call('POST', `/api/servers/${sid}/members/${zeca.user.id}/kick`, null, mod.token);
+  assert.equal(r.status, 200);
+  await zs.wait((m) => m.type === 'server-removed' && m.serverId === sid && m.reason === 'kick');
+  assert.equal((await call('GET', `/api/servers/${sid}`, null, zeca.token)).status, 404);
+  assert.equal((await call('POST', `/api/invites/${code}`, null, zeca.token)).status, 200);
+
+  // Banir: sai e não volta, nem com convite; desbanir libera
+  r = await call('POST', `/api/servers/${sid}/bans`, { userId: zeca.user.id, reason: 'spam' }, mod.token);
+  assert.equal(r.status, 200);
+  await zs.wait((m) => m.type === 'server-removed' && m.reason === 'ban');
+  r = await call('POST', `/api/invites/${code}`, null, zeca.token);
+  assert.equal(r.status, 403);
+  r = await call('GET', `/api/servers/${sid}/bans`, null, mod.token);
+  assert.equal(r.data.bans[0].username, 'zeca');
+  assert.equal(r.data.bans[0].reason, 'spam');
+  assert.equal((await call('GET', `/api/servers/${sid}/bans`, null, lia.token)).status, 403);
+  await call('DELETE', `/api/servers/${sid}/bans/${zeca.user.id}`, null, mod.token);
+  assert.equal((await call('POST', `/api/invites/${code}`, null, zeca.token)).status, 200);
+
+  // Apagar cargo tira de quem tinha
+  await call('DELETE', `/api/roles/${helper}`, null, ana);
+  r = await call('GET', `/api/servers/${sid}`, null, lia.token);
+  assert.deepEqual(r.data.members.find((m) => m.id === lia.user.id).roles, []);
+  assert.ok(!r.data.channels.some((c) => c.id === priv.id), 'sem o cargo, perde o canal privado');
+  zs.ws.close(); ls.ws.close();
+  assert.equal((await call('DELETE', `/api/servers/${sid}`, null, ana)).status, 200);
+});
+
 test('sair e apagar servidor', async () => {
   assert.equal((await call('POST', `/api/servers/${serverId}/leave`, null, ana)).status, 400, 'dono não sai');
   assert.equal((await call('POST', `/api/servers/${serverId}/leave`, null, bia)).status, 200);
