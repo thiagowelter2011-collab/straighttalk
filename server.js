@@ -134,6 +134,23 @@ function createApp({
     return { id: row.id, channelId: row.channel_id, userId: row.user_id, author: row.author, text: row.text, createdAt: row.created_at };
   }
 
+  /* ---------------- Conversas privadas ---------------- */
+
+  function dmPayload(row) {
+    return { id: row.id, fromId: row.from_id, toId: row.to_id, userId: row.from_id, author: row.author, text: row.text, createdAt: row.created_at };
+  }
+
+  // Dá para conversar com quem está em algum servidor com você (ou com quem você já conversou)
+  async function requireDmPeer(peerId, user) {
+    if (!Number.isInteger(peerId) || peerId === user.id) throw new HttpError(400, 'Conversa inválida.');
+    const peer = await db.get('SELECT id, username, display_name AS displayName, personal_message AS personalMessage FROM users WHERE id = ?', peerId);
+    const allowed = peer && (
+      await db.get(`SELECT 1 FROM members a JOIN members b ON a.server_id = b.server_id WHERE a.user_id = ? AND b.user_id = ? LIMIT 1`, user.id, peerId) ||
+      await db.get(`SELECT 1 FROM dm_messages WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?) LIMIT 1`, user.id, peerId, peerId, user.id));
+    if (!allowed) throw new HttpError(404, 'Contato não encontrado.');
+    return peer;
+  }
+
   /* ---------------- Validação ---------------- */
 
   function cleanName(v, max, label) {
@@ -294,7 +311,18 @@ function createApp({
         break;
       }
       case 'nudge': {
-        // "Chamar atenção": treme a janela de quem está no servidor
+        // "Chamar atenção": treme a janela de quem está na conversa
+        if (msg.toUserId != null) {
+          const peer = await requireDmPeer(Number(msg.toUserId), conn.user).catch(() => null);
+          if (!peer) return;
+          const t = now();
+          if (t - (lastNudge.get(conn.user.id) || 0) < 8000) return send(conn, { type: 'nudge-wait' });
+          lastNudge.set(conn.user.id, t);
+          const out = { type: 'nudge', fromId: conn.user.id, toId: peer.id, userId: conn.user.id, name: conn.user.displayName };
+          toUser(peer.id, out);
+          toUser(conn.user.id, out);
+          return;
+        }
         const ch = await channelRow(Number(msg.channelId));
         if (!ch || ch.type !== 'text' || !(await isMember(ch.serverId, conn.user.id))) return;
         const t = now();
@@ -304,6 +332,11 @@ function createApp({
         break;
       }
       case 'typing': {
+        if (msg.toUserId != null) {
+          const peer = await requireDmPeer(Number(msg.toUserId), conn.user).catch(() => null);
+          if (peer) toUser(peer.id, { type: 'typing', dmUserId: conn.user.id, userId: conn.user.id, name: conn.user.displayName });
+          return;
+        }
         const ch = await channelRow(Number(msg.channelId));
         if (!ch || ch.type !== 'text' || !(await isMember(ch.serverId, conn.user.id))) return;
         toServer(ch.serverId, { type: 'typing', channelId: ch.id, userId: conn.user.id, name: conn.user.displayName });
@@ -510,6 +543,57 @@ function createApp({
     if (m.user_id !== user.id && (await serverRow(m.server_id)).ownerId !== user.id) throw new HttpError(403, 'Você não pode apagar essa mensagem.');
     await db.run('DELETE FROM messages WHERE id = ?', m.id);
     toServer(m.server_id, { type: 'message-deleted', serverId: m.server_id, channelId: m.channel_id, messageId: m.id });
+    return { ok: true };
+  });
+
+  // Lista de conversas privadas, da mais recente para a mais antiga
+  route('GET', '/api/dm', async ({ user }) => {
+    const rows = await db.all(`SELECT c.other, c.lastAt, c.unread, u.username, u.display_name AS displayName, u.personal_message AS personalMessage
+      FROM (SELECT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other,
+                   MAX(created_at) AS lastAt,
+                   SUM(CASE WHEN to_id = ? AND read_at IS NULL THEN 1 ELSE 0 END) AS unread
+            FROM dm_messages WHERE from_id = ? OR to_id = ? GROUP BY other) c
+      JOIN users u ON u.id = c.other ORDER BY c.lastAt DESC LIMIT 50`, user.id, user.id, user.id, user.id);
+    return {
+      conversations: rows.map((r) => ({
+        user: { id: r.other, username: r.username, displayName: r.displayName, personalMessage: r.personalMessage, status: visibleStatus(r.other) },
+        lastAt: r.lastAt, unread: Number(r.unread) || 0,
+      })),
+    };
+  });
+
+  route('GET', '/api/dm/:userId/messages', async ({ user, params, query }) => {
+    const peer = await requireDmPeer(Number(params.userId), user);
+    const before = Number(query.get('before')) || Number.MAX_SAFE_INTEGER;
+    const limit = Math.min(Number(query.get('limit')) || 50, 100);
+    const rows = await db.all(`SELECT m.*, u.display_name AS author FROM dm_messages m JOIN users u ON u.id = m.from_id
+                    WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?)) AND m.id < ?
+                    ORDER BY m.id DESC LIMIT ?`, user.id, peer.id, peer.id, user.id, before, limit);
+    return {
+      user: { ...peer, status: visibleStatus(peer.id) },
+      messages: rows.reverse().map(dmPayload),
+    };
+  });
+
+  route('POST', '/api/dm/:userId/messages', async ({ user, params, body }) => {
+    const peer = await requireDmPeer(Number(params.userId), user);
+    const text = String(body.text || '').trim();
+    if (!text) throw new HttpError(400, 'Mensagem vazia.');
+    if (text.length > 4000) throw new HttpError(400, 'Mensagem longa demais (máximo 4000 caracteres).');
+    const t = now();
+    const { lastInsertRowid } = await db.run('INSERT INTO dm_messages (from_id, to_id, text, created_at) VALUES (?, ?, ?, ?)', user.id, peer.id, text, t);
+    const message = dmPayload({ id: Number(lastInsertRowid), from_id: user.id, to_id: peer.id, author: user.displayName, text, created_at: t });
+    const out = { type: 'dm', message, from: { id: user.id, username: user.username, displayName: user.displayName, personalMessage: user.personalMessage, status: visibleStatus(user.id) } };
+    toUser(peer.id, out);
+    toUser(user.id, out);
+    return message;
+  });
+
+  // Marca como lidas as mensagens que a outra pessoa mandou
+  route('POST', '/api/dm/:userId/read', async ({ user, params }) => {
+    const peer = await requireDmPeer(Number(params.userId), user);
+    await db.run('UPDATE dm_messages SET read_at = ? WHERE from_id = ? AND to_id = ? AND read_at IS NULL', now(), peer.id, user.id);
+    toUser(user.id, { type: 'dm-read', userId: peer.id });
     return { ok: true };
   });
 

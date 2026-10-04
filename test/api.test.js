@@ -223,6 +223,44 @@ test('status, mensagem pessoal e chamar atenção (estilo MSN)', async () => {
   a.ws.close(); b.ws.close();
 });
 
+test('conversa privada: só entre contatos, em tempo real, com não lidas', async () => {
+  const anaId = (await call('GET', '/api/me', null, ana)).data.user.id;
+  const biaId = (await call('GET', '/api/me', null, bia)).data.user.id;
+  const caio = (await call('POST', '/api/register', { username: 'caio', password: '123456', displayName: 'Caio' })).data.token;
+  assert.equal((await call('POST', `/api/dm/${anaId}/messages`, { text: 'oi' }, caio)).status, 404, 'sem servidor em comum');
+  assert.equal((await call('GET', `/api/dm/${anaId}/messages`, null, caio)).status, 404);
+  assert.equal((await call('POST', `/api/dm/${anaId}/messages`, { text: 'eu mesma' }, ana)).status, 400, 'consigo mesma');
+
+  const a = await socket(ana);
+  const b = await socket(bia);
+  await b.wait((m) => m.type === 'hello');
+  let r = await call('POST', `/api/dm/${biaId}/messages`, { text: 'oi bia, só pra você' }, ana);
+  assert.equal(r.status, 200);
+  const got = await b.wait((m) => m.type === 'dm');
+  assert.equal(got.message.text, 'oi bia, só pra você');
+  assert.equal(got.from.displayName, 'Ana');
+  await a.wait((m) => m.type === 'dm', 2000);
+  await call('POST', `/api/dm/${biaId}/messages`, { text: 'segunda' }, ana);
+
+  r = await call('GET', '/api/dm', null, bia);
+  assert.equal(r.data.conversations.length, 1);
+  assert.equal(r.data.conversations[0].user.displayName, 'Ana');
+  assert.equal(r.data.conversations[0].unread, 2);
+  r = await call('GET', `/api/dm/${anaId}/messages`, null, bia);
+  assert.deepEqual(r.data.messages.map((m) => m.text), ['oi bia, só pra você', 'segunda']);
+  assert.equal((await call('POST', `/api/dm/${anaId}/read`, null, bia)).status, 200);
+  assert.equal((await call('GET', '/api/dm', null, bia)).data.conversations[0].unread, 0);
+  assert.equal((await call('GET', '/api/dm', null, ana)).data.conversations[0].unread, 0, 'quem mandou não tem não lidas');
+  assert.equal((await call('GET', '/api/dm', null, caio)).data.conversations.length, 0);
+
+  b.ws.send(JSON.stringify({ type: 'typing', toUserId: anaId }));
+  assert.equal((await a.wait((m) => m.type === 'typing')).dmUserId, biaId);
+  b.ws.send(JSON.stringify({ type: 'nudge', toUserId: anaId }));
+  const n = await a.wait((m) => m.type === 'nudge' && m.fromId === biaId);
+  assert.equal(n.toId, anaId);
+  a.ws.close(); b.ws.close();
+});
+
 test('link para baixar o app do Windows', async () => {
   const res = await fetch(base + '/baixar', { redirect: 'manual' });
   assert.equal(res.status, 302);

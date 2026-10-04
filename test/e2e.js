@@ -72,6 +72,27 @@ const tag = Date.now().toString(36);
   await ana.waitForSelector('.nudge-line >> text=Bia chamou a sua atenção!');
   console.log('emoticons, mensagem pessoal, status e chamar atenção ok');
 
+  // Conversa particular: clicar no contato abre um chat só entre os dois
+  await ana.click('.member.clickable >> text=Bia');
+  await ana.waitForSelector('#main-title >> text=💬 Bia');
+  await ana.fill('#chat-input', 'segredo só nosso ;)');
+  await ana.press('#chat-input', 'Enter');
+  await bia.waitForSelector('#dm-list .channel.dm.unread .badge >> text=1');
+  await bia.click('#dm-list .channel.dm >> text=Ana');
+  await bia.waitForSelector('.msg .text >> text=segredo só nosso');
+  await bia.waitForSelector('#dm-list .channel.dm.active:not(.unread)');
+  await bia.fill('#chat-input', 'combinado');
+  await bia.press('#chat-input', 'Enter');
+  await ana.waitForSelector('.msg .text >> text=combinado');
+  await ana.click('#btn-nudge');
+  await bia.waitForSelector('.nudge-line >> text=Ana chamou a sua atenção!');
+  await bia.screenshot({ path: `${OUT}/v2-particular.png` });
+  await ana.click('#text-channels .channel >> nth=0');
+  await ana.waitForSelector('.msg .text >> text=valeu ana');
+  if (await ana.isVisible('.msg .text >> text=segredo só nosso')) throw new Error('mensagem particular apareceu no canal');
+  await bia.click('#text-channels .channel >> nth=0');
+  console.log('conversa particular ok');
+
   const caio = await person('Caio');
   await register(caio, `caio${tag}`, 'Caio', invite);
   await caio.waitForSelector('#dlg-form[open]');

@@ -345,6 +345,14 @@ input:focus, select:focus, textarea:focus { border-color: #3c8ee0; box-shadow: 0
 .member .pm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: #7a8796; font-style: italic; }
 .member:not(.online) .name { color: #8a96a3; }
 .member:not(.online) .avatar { filter: grayscale(.8); opacity: .7; }
+.member.clickable { cursor: pointer; }
+.member.active { background: linear-gradient(#eef6fe, #d4e7fb); border-color: #9cc3ea; }
+.badge { flex: none; min-width: 18px; padding: 0 5px; border-radius: 9px; background: linear-gradient(#ffb347, #f08a00); color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.channel.dm { gap: 6px; }
+.channel.dm .frame { padding: 1px; border-radius: 4px; }
+.channel.dm .avatar { width: 20px; height: 20px; font-size: 9px; }
+.channel.dm.unread .ch-name::after { content: none; }
 .crown { font-size: 12px; }
 
 /* Diálogos */

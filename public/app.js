@@ -18,13 +18,16 @@ const S = {
   servers: [],
   serverId: Number(localGet('st-server')) || null,
   detail: null,                 // { server, channels, members, voice }
-  view: 'empty',                // empty | text | voice
+  view: 'empty',                // empty | text | voice | dm
+  dmUserId: null,               // conversa privada aberta
+  dms: [],                      // [{ user, lastAt, unread }] conversas privadas, mais recente primeiro
+  peers: new Map(),             // userId -> { id, displayName, personalMessage, status }
   textChannel: {},              // serverId -> channelId
   viewVoiceChannelId: null,
   ws: null,
   connId: null,
-  messages: new Map(),          // channelId -> [{...}]
-  hasMore: new Map(),           // channelId -> bool
+  messages: new Map(),          // channelId ou 'dm:<userId>' -> [{...}]
+  hasMore: new Map(),           // mesma chave -> bool
   unread: new Set(),            // channelIds
   unreadServers: new Set(),
   voiceState: new Map(),        // serverId -> { channelId: participants[] }
@@ -35,7 +38,7 @@ const S = {
   speaking: new Set(),          // mediaIds
   volumes: JSON.parse(localGet('st-volumes') || '{}'), // userId -> 0..1
   settings: JSON.parse(localGet('st-settings') || '{}'),
-  typing: new Map(),            // channelId -> Map(userId -> {name, until})
+  typing: new Map(),            // channelId ou 'dm:<userId>' -> Map(userId -> {name, until})
   status: localGet('st-status') || 'online', // online | away | busy | invisible
 };
 
@@ -103,6 +106,13 @@ async function logout() {
   try { if (S.token) await fetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${S.token}` } }); } catch {}
   S.token = null;
   S.user = null;
+  // Não deixa conversas da conta anterior na memória
+  S.messages.clear();
+  S.hasMore.clear();
+  S.dms = [];
+  S.peers.clear();
+  S.dmUserId = null;
+  S.view = 'empty';
   localDel('st-token');
   S.ws?.close();
   S.ws = null;
@@ -121,6 +131,7 @@ async function start() {
   renderMe();
   updateControls();
   connectWs();
+  loadDms();
   await handlePendingInvite();
   const target = S.servers.find((s) => s.id === S.serverId) || S.servers[0];
   if (target) await selectServer(target.id); else renderAll();
@@ -260,6 +271,7 @@ async function onWs(msg) {
         joinVoice(ch).catch(() => {});
       }
       if (S.serverId) reloadDetail();
+      loadDms();
       break;
     }
     case 'message': {
@@ -271,7 +283,7 @@ async function onWs(msg) {
       if (m.userId !== S.user.id) {
         if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${m.text}`); }
       }
-      if (visible) appendMessage(m);
+      if (visible) appendMessage(m, m.channelId);
       else if (m.userId !== S.user.id) {
         S.unread.add(m.channelId);
         if (msg.serverId !== S.serverId) S.unreadServers.add(msg.serverId);
@@ -284,6 +296,14 @@ async function onWs(msg) {
       const list = S.messages.get(msg.channelId);
       if (list) S.messages.set(msg.channelId, list.filter((x) => x.id !== msg.messageId));
       if (S.view === 'text' && S.textChannel[S.serverId] === msg.channelId) renderMessages();
+      break;
+    }
+    case 'dm':
+      onDm(msg);
+      break;
+    case 'dm-read': {
+      const c = S.dms.find((x) => x.user.id === msg.userId);
+      if (c && c.unread) { c.unread = 0; renderDmList(); renderMembers(); }
       break;
     }
     case 'voice': {
@@ -301,7 +321,13 @@ async function onWs(msg) {
       if (msg.serverId === S.serverId) { renderChannels(); renderStage(); }
       break;
     }
-    case 'presence':
+    case 'presence': {
+      const peer = S.peers.get(msg.userId);
+      if (peer && peer.status !== msg.status) {
+        peer.status = msg.status || (msg.online ? 'online' : 'offline');
+        renderDmList();
+        if (S.view === 'dm' && S.dmUserId === msg.userId) renderMain();
+      }
       if (S.detail && msg.serverId === S.serverId) {
         const m = S.detail.members.find((x) => x.id === msg.userId);
         if (m) {
@@ -309,16 +335,22 @@ async function onWs(msg) {
           m.online = msg.online;
           m.status = msg.status || (msg.online ? 'online' : 'offline');
           renderMembers();
+          renderDmList();
           if (cameOnline && m.id !== S.user.id) { Sounds.play('online'); toast(`${m.displayName} acabou de entrar.`); }
         }
       }
       break;
+    }
     case 'nudge': {
       const mine = msg.userId === S.user.id;
-      const visible = S.view === 'text' && S.serverId === msg.serverId && S.textChannel[S.serverId] === msg.channelId;
+      const dmPeer = msg.fromId ? (mine ? msg.toId : msg.fromId) : null;
+      const visible = dmPeer
+        ? S.view === 'dm' && S.dmUserId === dmPeer
+        : S.view === 'text' && S.serverId === msg.serverId && S.textChannel[S.serverId] === msg.channelId;
       if (visible) {
         const box = $('#messages');
-        box.append(el('div', { className: 'msg system nudge-line', textContent: mine ? 'Você chamou a atenção de todos.' : `${msg.name} chamou a sua atenção!` }));
+        const who = dmPeer ? S.peers.get(dmPeer)?.displayName : null;
+        box.append(el('div', { className: 'msg system nudge-line', textContent: mine ? `Você chamou a atenção ${who ? 'de ' + who : 'de todos'}.` : `${msg.name} chamou a sua atenção!` }));
         box.scrollTop = box.scrollHeight;
       } else if (!mine) toast(`${msg.name} chamou a sua atenção!`);
       if (!mine) {
@@ -359,8 +391,9 @@ async function onWs(msg) {
       break;
     case 'typing':
       if (msg.userId === S.user.id) break;
-      if (!S.typing.has(msg.channelId)) S.typing.set(msg.channelId, new Map());
-      S.typing.get(msg.channelId).set(msg.userId, { name: msg.name, until: Date.now() + 5000 });
+      const key = msg.dmUserId ? 'dm:' + msg.dmUserId : msg.channelId;
+      if (!S.typing.has(key)) S.typing.set(key, new Map());
+      S.typing.get(key).set(msg.userId, { name: msg.name, until: Date.now() + 5000 });
       renderTyping();
       setTimeout(renderTyping, 5100);
       break;
@@ -389,15 +422,25 @@ async function openText(channelId) {
   if (matchMedia('(min-width: 721px)').matches) $('#chat-input').focus();
 }
 
-async function loadOlder(channelId) {
-  const list = S.messages.get(channelId) || [];
+// A conversa aberta agora: um canal de texto do servidor ou uma conversa privada
+function currentConv() {
+  if (S.view === 'dm' && S.dmUserId) {
+    const u = S.peers.get(S.dmUserId);
+    return { key: 'dm:' + S.dmUserId, dm: true, userId: S.dmUserId, name: u?.displayName || 'Contato', url: `/api/dm/${S.dmUserId}/messages` };
+  }
+  const ch = S.view === 'text' ? currentChannel() : null;
+  return ch ? { key: ch.id, dm: false, channel: ch, name: '#' + ch.name, url: `/api/channels/${ch.id}/messages` } : null;
+}
+
+async function loadOlder(conv) {
+  const list = S.messages.get(conv.key) || [];
   const before = list[0]?.id;
   if (!before) return;
   const box = $('#messages');
   const prevHeight = box.scrollHeight;
-  const { messages } = await api('GET', `/api/channels/${channelId}/messages?limit=50&before=${before}`);
-  S.messages.set(channelId, [...messages, ...list]);
-  S.hasMore.set(channelId, messages.length === 50);
+  const { messages } = await api('GET', `${conv.url}?limit=50&before=${before}`);
+  S.messages.set(conv.key, [...messages, ...list]);
+  S.hasMore.set(conv.key, messages.length === 50);
   renderMessages(false);
   box.scrollTop = box.scrollHeight - prevHeight;
 }
@@ -409,25 +452,27 @@ function currentChannel() {
 function renderMessages(scroll = true) {
   const box = $('#messages');
   box.innerHTML = '';
-  const ch = currentChannel();
-  if (!ch) return;
-  const list = S.messages.get(ch.id);
+  const conv = currentConv();
+  if (!conv) return;
+  const list = S.messages.get(conv.key);
   if (!list) { box.append(el('div', { className: 'msg system', textContent: 'Carregando…' })); return; }
-  if (S.hasMore.get(ch.id)) {
+  if (S.hasMore.get(conv.key)) {
     const btn = el('button', { className: 'btn small load-more', textContent: 'Carregar mensagens antigas', type: 'button' });
-    btn.onclick = () => loadOlder(ch.id).catch((e) => toast(e.message));
+    btn.onclick = () => loadOlder(conv).catch((e) => toast(e.message));
     box.append(btn);
   } else {
-    box.append(el('div', { className: 'msg system first', textContent: `Este é o começo do canal #${ch.name}.` }));
+    box.append(el('div', { className: 'msg system first', textContent: conv.dm
+      ? `Esta é a sua conversa particular com ${conv.name}. Só vocês dois veem estas mensagens.`
+      : `Este é o começo do canal ${conv.name}.` }));
   }
   let prev = null;
   for (const m of list) { box.append(messageNode(m, prev)); prev = m; }
   if (scroll) box.scrollTop = box.scrollHeight;
 }
 
-function appendMessage(m) {
+function appendMessage(m, key) {
   const box = $('#messages');
-  const list = S.messages.get(m.channelId) || [];
+  const list = S.messages.get(key) || [];
   const prev = list[list.length - 2] || null;
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   box.append(messageNode(m, prev));
@@ -451,7 +496,7 @@ function messageNode(m, prev) {
   if (!first) text.title = fmtTime(m.createdAt);
   body.append(text);
   node.append(avatar, body);
-  if (m.userId === S.user.id || S.detail?.server.ownerId === S.user.id) {
+  if (m.channelId && (m.userId === S.user.id || S.detail?.server.ownerId === S.user.id)) {
     const del = el('button', { className: 'del', title: 'Apagar mensagem', textContent: '🗑️', type: 'button' });
     del.onclick = async () => {
       if (!(await formDialog({ title: 'Apagar mensagem?', text: m.text.slice(0, 200), okText: 'Apagar', danger: true }))) return;
@@ -474,45 +519,159 @@ input.addEventListener('keydown', (e) => {
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = input.scrollHeight + 'px';
-  const ch = currentChannel();
-  if (ch && input.value && Date.now() - lastTypingSent > 3000) {
+  const conv = currentConv();
+  if (conv && input.value && Date.now() - lastTypingSent > 3000) {
     lastTypingSent = Date.now();
-    wsSend({ type: 'typing', channelId: ch.id });
+    wsSend(conv.dm ? { type: 'typing', toUserId: conv.userId } : { type: 'typing', channelId: conv.channel.id });
   }
 });
 $('#chat-form').addEventListener('submit', (e) => { e.preventDefault(); sendMessage(); });
 
 async function sendMessage() {
-  const ch = currentChannel();
+  const conv = currentConv();
   const text = input.value.trim();
-  if (!ch || !text) return;
+  if (!conv || !text) return;
   input.value = '';
   input.style.height = 'auto';
   lastTypingSent = 0;
   try {
-    const m = await api('POST', `/api/channels/${ch.id}/messages`, { text });
-    const list = S.messages.get(ch.id);
-    if (list && !list.some((x) => x.id === m.id)) { list.push(m); if (S.textChannel[S.serverId] === ch.id) appendMessage(m); }
+    const m = await api('POST', conv.url, { text });
+    const list = S.messages.get(conv.key);
+    if (list && !list.some((x) => x.id === m.id)) { list.push(m); if (currentConv()?.key === conv.key) appendMessage(m, conv.key); }
   } catch (err) {
     toast(err.message);
     input.value = text;
   }
 }
 
-function clearTyping(channelId, userId) {
-  S.typing.get(channelId)?.delete(userId);
+function clearTyping(key, userId) {
+  S.typing.get(key)?.delete(userId);
   renderTyping();
 }
 
 function renderTyping() {
-  const ch = currentChannel();
+  const conv = currentConv();
   const box = $('#typing');
-  if (!ch) { box.textContent = ''; return; }
-  const map = S.typing.get(ch.id);
+  if (!conv) { box.textContent = ''; return; }
+  const map = S.typing.get(conv.key);
   const names = map ? [...map.values()].filter((t) => t.until > Date.now()).map((t) => t.name) : [];
   box.textContent = !names.length ? '' :
     names.length === 1 ? `${names[0]} está digitando…` :
     names.length <= 3 ? `${names.join(', ')} estão digitando…` : 'Várias pessoas estão digitando…';
+}
+
+/* ================= Conversas privadas ================= */
+
+function rememberPeer(u) {
+  if (!u || u.id === S.user?.id) return;
+  const old = S.peers.get(u.id) || {};
+  S.peers.set(u.id, { ...old, ...u, status: u.status || old.status || 'offline' });
+}
+
+function peerStatus(userId) {
+  const m = S.detail?.members.find((x) => x.id === userId);
+  if (m) return m.online ? (m.status || 'online') : 'offline';
+  return S.peers.get(userId)?.status || 'offline';
+}
+
+async function loadDms() {
+  try {
+    const { conversations } = await api('GET', '/api/dm');
+    S.dms = conversations;
+    for (const c of conversations) rememberPeer(c.user);
+  } catch { return; }
+  renderDmList();
+  renderMembers();
+}
+
+async function openDm(userId) {
+  const member = S.detail?.members.find((m) => m.id === userId);
+  if (member) rememberPeer({ id: member.id, username: member.username, displayName: member.displayName, personalMessage: member.personalMessage, status: peerStatus(member.id) });
+  S.view = 'dm';
+  S.dmUserId = userId;
+  closeDrawer();
+  $('#app').classList.remove('show-members');
+  markDmRead(userId);
+  renderAll();
+  const key = 'dm:' + userId;
+  if (!S.messages.has(key)) {
+    try {
+      const { messages, user } = await api('GET', `/api/dm/${userId}/messages?limit=50`);
+      rememberPeer(user);
+      S.messages.set(key, messages);
+      S.hasMore.set(key, messages.length === 50);
+    } catch (err) {
+      toast(err.message);
+      S.messages.set(key, []);
+    }
+    if (S.view === 'dm' && S.dmUserId === userId) renderMain();
+  }
+  if (matchMedia('(min-width: 721px)').matches) $('#chat-input').focus();
+}
+
+function markDmRead(userId) {
+  const c = S.dms.find((x) => x.user.id === userId);
+  if (!c?.unread) return;
+  c.unread = 0;
+  api('POST', `/api/dm/${userId}/read`).catch(() => {});
+}
+
+function onDm(msg) {
+  const m = msg.message;
+  const mine = m.fromId === S.user.id;
+  const peerId = mine ? m.toId : m.fromId;
+  const key = 'dm:' + peerId;
+  if (!mine) rememberPeer(msg.from);
+  const list = S.messages.get(key);
+  if (list && !list.some((x) => x.id === m.id)) list.push(m);
+  clearTyping(key, m.fromId);
+  const visible = S.view === 'dm' && S.dmUserId === peerId;
+  let c = S.dms.find((x) => x.user.id === peerId);
+  if (!c) {
+    const u = S.peers.get(peerId);
+    if (!u) { loadDms(); } else { c = { user: u, lastAt: m.createdAt, unread: 0 }; S.dms.unshift(c); }
+  }
+  if (c) {
+    c.lastAt = m.createdAt;
+    S.dms = [c, ...S.dms.filter((x) => x !== c)];
+    if (!mine && !(visible && !document.hidden)) c.unread++;
+  }
+  if (!mine) {
+    if (!visible || document.hidden) { Sounds.play('message'); flashTitle(`${m.author} diz: ${m.text}`); }
+    if (!visible) toast(`${m.author} diz: ${m.text.slice(0, 80)}`);
+  }
+  if (visible) {
+    if (list) appendMessage(m, key);
+    if (!mine && !document.hidden) api('POST', `/api/dm/${peerId}/read`).catch(() => {});
+  }
+  renderDmList();
+  renderMembers();
+}
+
+// Ao voltar para a janela, a conversa aberta conta como lida
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && S.view === 'dm' && S.dmUserId) { markDmRead(S.dmUserId); renderDmList(); renderMembers(); }
+});
+
+function renderDmList() {
+  const ul = $('#dm-list');
+  if (!ul) return;
+  ul.innerHTML = '';
+  $('#dm-title').classList.toggle('hidden', !S.dms.length);
+  for (const c of S.dms) {
+    const u = S.peers.get(c.user.id) || c.user;
+    const av = el('div', { className: 'avatar' });
+    paintAvatar(av, u.displayName);
+    const frame = el('div', { className: 'frame' }, av);
+    frame.dataset.status = peerStatus(u.id);
+    const li = el('li', { className: 'channel dm', title: 'Conversa particular com ' + u.displayName }, frame,
+      el('span', { className: 'ch-name', textContent: u.displayName }),
+      c.unread ? el('span', { className: 'badge', textContent: c.unread > 99 ? '99+' : String(c.unread) }) : null);
+    if (S.view === 'dm' && S.dmUserId === u.id) li.classList.add('active');
+    if (c.unread) li.classList.add('unread');
+    li.onclick = () => openDm(u.id);
+    ul.append(li);
+  }
 }
 
 /* ================= Voz ================= */
@@ -685,6 +844,7 @@ $('#dlg-share').addEventListener('close', async () => {
 function renderAll() {
   renderRail();
   renderChannels();
+  renderDmList();
   renderMain();
   renderMembers();
 }
@@ -819,12 +979,22 @@ function voiceUserNode(p) {
 function renderMain() {
   const title = $('#main-title');
   $('#view-empty').classList.toggle('hidden', S.view !== 'empty');
-  $('#view-text').classList.toggle('hidden', S.view !== 'text');
+  $('#view-text').classList.toggle('hidden', S.view !== 'text' && S.view !== 'dm');
   $('#view-voice').classList.toggle('hidden', S.view !== 'voice');
   if (S.view === 'text') {
     const ch = currentChannel();
     title.textContent = ch ? `# ${ch.name}` : '';
     input.placeholder = ch ? `Conversar em #${ch.name}` : '';
+    $('#btn-nudge').title = 'Chamar a atenção de todos na conversa';
+    renderMessages();
+    renderTyping();
+  } else if (S.view === 'dm') {
+    const u = S.peers.get(S.dmUserId);
+    const name = u?.displayName || 'Contato';
+    const st = peerStatus(S.dmUserId);
+    title.textContent = `💬 ${name} (${STATUS_LABEL[st] || 'Offline'})`;
+    input.placeholder = `Conversar com ${name}`;
+    $('#btn-nudge').title = `Chamar a atenção de ${name}`;
     renderMessages();
     renderTyping();
   } else if (S.view === 'voice') {
@@ -935,8 +1105,13 @@ function renderMembers() {
         linkify(pm, m.personalMessage, true);
         who.append(pm);
       }
-      const row = el('div', { className: 'member' + (online ? ' online' : ''), title: '@' + m.username }, frame, who,
+      const unread = S.dms.find((c) => c.user.id === m.id)?.unread || 0;
+      const me = m.id === S.user.id;
+      const row = el('div', { className: 'member' + (online ? ' online' : '') + (me ? '' : ' clickable'), title: me ? '@' + m.username : `@${m.username}: clique para conversar em particular` }, frame, who,
+        unread ? el('span', { className: 'badge', textContent: unread > 99 ? '99+' : String(unread) }) : null,
         m.id === S.detail.server.ownerId ? el('span', { className: 'crown', title: 'Dono', textContent: '👑' }) : null);
+      if (!me) row.onclick = () => openDm(m.id);
+      if (S.view === 'dm' && S.dmUserId === m.id) row.classList.add('active');
       box.append(row);
     }
   }
@@ -1304,8 +1479,8 @@ $('#btn-emoticons').onclick = (e) => { e.stopPropagation(); $('#emoticons').clas
 document.addEventListener('click', (e) => { if (!e.target.closest('#emoticons')) $('#emoticons').classList.add('hidden'); });
 
 $('#btn-nudge').onclick = () => {
-  const ch = currentChannel();
-  if (ch) wsSend({ type: 'nudge', channelId: ch.id });
+  const conv = currentConv();
+  if (conv) wsSend(conv.dm ? { type: 'nudge', toUserId: conv.userId } : { type: 'nudge', channelId: conv.channel.id });
 };
 
 // Sons feitos na hora (sem arquivos): mensagem nova, contato online, chamar atenção
