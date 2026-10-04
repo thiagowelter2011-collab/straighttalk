@@ -1391,7 +1391,7 @@ async function showInvite(s) {
 
 $('#btn-settings').onclick = async () => {
   $('#set-name').value = S.user.displayName;
-  $('#set-noise').checked = S.settings.noiseSuppression !== false;
+  $('#set-noise').value = StraightTalkMedia.noiseMode(S.settings);
   $('#set-sounds').checked = S.settings.sounds !== false;
   $('#set-notify').checked = notificationsOn() || (S.settings.notify !== false && window.Notification?.permission === 'default');
   $('#set-media').textContent = S.media.mode === 'livekit'
@@ -1429,10 +1429,11 @@ $('#dlg-settings').addEventListener('close', async () => {
   if (v === 'logout') return logout();
   if (v !== 'ok') return;
   const micChanged = S.settings.micId !== ($('#set-mic').value || undefined) ||
-    (S.settings.noiseSuppression !== false) !== $('#set-noise').checked;
+    StraightTalkMedia.noiseMode(S.settings) !== $('#set-noise').value;
   S.settings.micId = $('#set-mic').value || undefined;
   S.settings.speakerId = $('#set-speaker').value || undefined;
-  S.settings.noiseSuppression = $('#set-noise').checked;
+  S.settings.noiseMode = $('#set-noise').value;
+  delete S.settings.noiseSuppression;
   S.settings.sounds = $('#set-sounds').checked;
   S.settings.notify = $('#set-notify').checked;
   localSet('st-settings', JSON.stringify(S.settings));

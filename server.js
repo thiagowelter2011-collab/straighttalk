@@ -15,6 +15,13 @@ const media = require('./lib/media');
 const PUBLIC = path.join(__dirname, 'public');
 const DOWNLOAD_BASE = 'https://github.com/thiagowelter2011-collab/straighttalk/releases/latest/download';
 const LIVEKIT_UMD = path.join(path.dirname(require.resolve('livekit-client')), 'livekit-client.umd.js');
+// Supressão de ruído por IA (RNNoise em WebAssembly)
+const NOISE_DIR = path.join(path.dirname(require.resolve('@sapphi-red/web-noise-suppressor')));
+const NOISE_FILES = {
+  '/vendor/noise/rnnoise-worklet.js': path.join(NOISE_DIR, 'rnnoise', 'workletProcessor.js'),
+  '/vendor/noise/rnnoise.wasm': path.join(NOISE_DIR, 'rnnoise.wasm'),
+  '/vendor/noise/rnnoise_simd.wasm': path.join(NOISE_DIR, 'rnnoise_simd.wasm'),
+};
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -24,6 +31,7 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.json': 'application/json',
+  '.wasm': 'application/wasm',
 };
 
 // Imagens, vídeos e áudios que o navegador pode mostrar direto; o resto vira download
@@ -745,6 +753,7 @@ function createApp({
   function serveStatic(req, res, pathname) {
     let file;
     if (pathname === '/vendor/livekit-client.js') file = LIVEKIT_UMD;
+    else if (NOISE_FILES[pathname]) file = NOISE_FILES[pathname];
     else {
       file = path.normalize(path.join(PUBLIC, decodeURIComponent(pathname)));
       if (!file.startsWith(PUBLIC)) { res.writeHead(403); return res.end(); }

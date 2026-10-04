@@ -214,7 +214,13 @@
       <label>Saída de áudio
         <select id="set-speaker"></select>
       </label>
-      <label class="radio"><input type="checkbox" id="set-noise"> Supressão de ruído</label>
+      <label>Supressão de ruído
+        <select id="set-noise">
+          <option value="ai">Forte, com IA (tira teclado, ventilador e barulho de fundo)</option>
+          <option value="browser">Normal (a do navegador)</option>
+          <option value="off">Desligada</option>
+        </select>
+      </label>
       <div class="avatar-row">Foto de perfil:
         <button type="button" class="btn small" id="set-avatar-pick">🖼️ Escolher foto</button>
         <button type="button" class="btn small danger hidden" id="set-avatar-remove">Remover</button>

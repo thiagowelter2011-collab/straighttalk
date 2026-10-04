@@ -11,12 +11,60 @@
 //   callbacks: onScreen(mediaId, stream|null, el?) · onSpeaking(mediaId, bool) · onShareEnded() · onDisconnected()
 
 (function () {
-  const MIC_CONSTRAINTS = (deviceId, noiseSuppression = true) => ({
+  // Supressão de ruído: 'ai' (RNNoise, tira teclado, ventilador e barulho de fundo), 'browser' (a do navegador) ou 'off'
+  function noiseMode(settings) {
+    const m = settings.noiseMode || (settings.noiseSuppression === false ? 'off' : 'ai');
+    return m === 'ai' && !Denoise.supported() ? 'browser' : m;
+  }
+
+  const MIC_CONSTRAINTS = (deviceId, mode = 'browser') => ({
     deviceId: deviceId ? { exact: deviceId } : undefined,
     echoCancellation: true,
-    noiseSuppression,
+    // Com a IA ligada, a do navegador fica desligada para as duas não brigarem
+    noiseSuppression: mode === 'browser',
     autoGainControl: true,
   });
+
+  // RNNoise (rede neural pequena, roda no próprio computador) num AudioWorklet
+  const Denoise = {
+    ctx: null,
+    wasm: null,
+    loading: null,
+    supported: () => typeof AudioWorkletNode !== 'undefined' && typeof WebAssembly !== 'undefined',
+    load() {
+      this.loading ||= (async () => {
+        const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+        await ctx.audioWorklet.addModule('/vendor/noise/rnnoise-worklet.js');
+        const simd = WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+        const res = await fetch(simd ? '/vendor/noise/rnnoise_simd.wasm' : '/vendor/noise/rnnoise.wasm');
+        if (!res.ok) throw new Error('rnnoise indisponível');
+        this.wasm = await res.arrayBuffer();
+        this.ctx = ctx;
+      })();
+      this.loading.catch(() => { this.loading = null; });
+      return this.loading;
+    },
+    // Recebe a trilha do microfone e devolve outra, já limpa
+    async process(track) {
+      await this.load();
+      if (this.ctx.state === 'suspended') await this.ctx.resume().catch(() => {});
+      const src = this.ctx.createMediaStreamSource(new MediaStream([track]));
+      const node = new AudioWorkletNode(this.ctx, '@sapphi-red/web-noise-suppressor/rnnoise', {
+        processorOptions: { maxChannels: 1, wasmBinary: this.wasm },
+      });
+      const dest = this.ctx.createMediaStreamDestination();
+      src.connect(node).connect(dest);
+      const out = dest.stream.getAudioTracks()[0];
+      return {
+        track: out,
+        stop() {
+          try { src.disconnect(); node.disconnect(); } catch {}
+          node.port.postMessage('destroy');
+          out.stop();
+        },
+      };
+    },
+  };
 
   // Detecta fala analisando o volume (usado no modo P2P e para o próprio microfone)
   let audioCtx;
@@ -48,11 +96,18 @@
     return () => { stopped = true; try { src.disconnect(); } catch {} };
   }
 
+  // Microfone pronto para enviar; com a IA ligada, já passa pelo RNNoise (se falhar, segue sem)
   async function getMic(settings) {
-    return navigator.mediaDevices.getUserMedia({
-      audio: MIC_CONSTRAINTS(settings.micId, settings.noiseSuppression !== false),
-      video: false,
-    });
+    const mode = noiseMode(settings);
+    const raw = await navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS(settings.micId, mode), video: false });
+    if (mode !== 'ai') return { stream: raw, stop: () => raw.getTracks().forEach((t) => t.stop()) };
+    try {
+      const d = await Denoise.process(raw.getAudioTracks()[0]);
+      return { stream: new MediaStream([d.track]), stop: () => { d.stop(); raw.getTracks().forEach((t) => t.stop()); } };
+    } catch (err) {
+      console.warn('Supressão de ruído por IA indisponível:', err);
+      return { stream: raw, stop: () => raw.getTracks().forEach((t) => t.stop()) };
+    }
   }
 
   function applySink(el, sinkId) {
@@ -90,7 +145,9 @@
 
     async join() {
       try {
-        this.mic = await getMic(this.settings);
+        const mic = await getMic(this.settings);
+        this.mic = mic.stream;
+        this.stopMicRaw = mic.stop;
         this.stopMicWatch = watchLevel(this.mic, (s) => this.cb.onSpeaking(this.myConnId, s));
       } catch (err) {
         this.mic = null;
@@ -256,6 +313,7 @@
       this.stopShare();
       for (const id of [...this.peers.keys()]) this.removePeer(id);
       this.stopMicWatch?.();
+      this.stopMicRaw?.();
       this.mic?.getTracks().forEach((t) => t.stop());
       this.mic = null;
     }
@@ -283,7 +341,7 @@
       const room = new LK.Room({
         adaptiveStream: true,
         dynacast: true,
-        audioCaptureDefaults: MIC_CONSTRAINTS(this.settings.micId, this.settings.noiseSuppression !== false),
+        audioCaptureDefaults: MIC_CONSTRAINTS(this.settings.micId, noiseMode(this.settings)),
         audioOutput: this.settings.speakerId ? { deviceId: this.settings.speakerId } : undefined,
         publishDefaults: { dtx: true, red: true },
       });
@@ -333,6 +391,7 @@
       await room.connect(url, token, { autoSubscribe: true });
       try {
         await room.localParticipant.setMicrophoneEnabled(!this.muted);
+        await this.ensureDenoise();
       } catch (err) {
         this.cb.onMicError?.(err);
       }
@@ -347,7 +406,29 @@
 
     setMuted(b) {
       this.muted = b;
-      this.room?.localParticipant.setMicrophoneEnabled(!b).catch((err) => this.cb.onMicError?.(err));
+      this.room?.localParticipant.setMicrophoneEnabled(!b).then(() => this.ensureDenoise()).catch((err) => this.cb.onMicError?.(err));
+    }
+
+    // Liga o RNNoise na trilha do microfone do LiveKit (processador de trilha)
+    async ensureDenoise() {
+      if (noiseMode(this.settings) !== 'ai') return;
+      const LK = window.LivekitClient;
+      const track = this.room?.localParticipant.getTrackPublication(LK.Track.Source.Microphone)?.track;
+      if (!track || track.getProcessor?.()) return;
+      try {
+        await Denoise.load();
+        track.setAudioContext(Denoise.ctx);
+        let handle = null;
+        await track.setProcessor({
+          name: 'rnnoise',
+          processedTrack: undefined,
+          async init(opts) { handle = await Denoise.process(opts.track); this.processedTrack = handle.track; },
+          async restart(opts) { handle?.stop(); await this.init(opts); },
+          async destroy() { handle?.stop(); handle = null; },
+        });
+      } catch (err) {
+        console.warn('Supressão de ruído por IA indisponível:', err);
+      }
     }
 
     setDeafened(b) {
@@ -402,5 +483,5 @@
     handleSignal() {}
   }
 
-  window.StraightTalkMedia = { P2PEngine, LiveKitEngine, watchLevel };
+  window.StraightTalkMedia = { P2PEngine, LiveKitEngine, watchLevel, noiseMode, Denoise };
 })();

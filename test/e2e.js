@@ -140,6 +140,10 @@ const tag = Date.now().toString(36);
     voiceList: [...document.querySelectorAll('.voice-user .name')].map((e) => e.textContent),
     live: document.querySelectorAll('.voice-user .live').length,
     mode: S.media.mode,
+    // Supressão de ruído por IA ligada no microfone
+    denoise: S.voice.engine.room
+      ? S.voice.engine.room.localParticipant.getTrackPublication(LivekitClient.Track.Source.Microphone)?.track?.getProcessor()?.name || null
+      : (StraightTalkMedia.Denoise.ctx ? 'rnnoise' : null),
   }));
   console.log('Bia vê:', JSON.stringify(info));
   await bia.screenshot({ path: `${OUT}/v2-voz.png` });
@@ -163,5 +167,5 @@ const tag = Date.now().toString(36);
     console.log('servidor de teste apagado');
   }
   await browser.close();
-  if (!info.screen.length || info.audios < 2) process.exit(1);
+  if (!info.screen.length || info.audios < 2 || info.denoise !== 'rnnoise') process.exit(1);
 })().catch((e) => { console.error('FALHOU', e); process.exit(1); });
