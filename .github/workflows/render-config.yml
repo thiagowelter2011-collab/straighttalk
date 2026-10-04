@@ -1,0 +1,41 @@
+name: Configurar Render
+
+# Muda uma configuração (variável de ambiente) do site no Render e reinicia, usando o segredo RENDER_API_KEY.
+# Só aceita configurações que não são segredo, porque o valor aparece no histórico do GitHub.
+# Chaves secretas (Mercado Pago, banco, LiveKit) continuam sendo colocadas direto no Render.
+on:
+  workflow_dispatch:
+    inputs:
+      chave:
+        description: 'Nome da configuração'
+        required: true
+        type: choice
+        options: [ADMIN_USERNAMES, MONTHLY_PRICE, PUBLIC_URL, DOWNLOAD_URL_BASE]
+      valor:
+        description: 'Valor (vazio apaga a configuração)'
+        required: false
+
+jobs:
+  configurar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configurar e reiniciar
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          CHAVE: ${{ inputs.chave }}
+          VALOR: ${{ inputs.valor }}
+        run: |
+          if [ -z "$RENDER_API_KEY" ]; then echo "::error::Falta o segredo RENDER_API_KEY no GitHub"; exit 1; fi
+          api() { curl -fsS -H "Authorization: Bearer $RENDER_API_KEY" -H 'Accept: application/json' "$@"; }
+          id=$(api "https://api.render.com/v1/services?name=straighttalk&limit=20" | jq -r '[.[] | .service | select(.name == "straighttalk")][0].id')
+          if [ -z "$id" ] || [ "$id" = null ]; then echo "::error::Serviço straighttalk não encontrado no Render"; exit 1; fi
+          echo "serviço: $id"
+          if [ -n "$VALOR" ]; then
+            api -X PUT -H 'Content-Type: application/json' -d "$(jq -n --arg v "$VALOR" '{value: $v}')" \
+              "https://api.render.com/v1/services/$id/env-vars/$CHAVE" > /dev/null
+            echo "$CHAVE definida"
+          else
+            api -X DELETE "https://api.render.com/v1/services/$id/env-vars/$CHAVE" > /dev/null || true
+            echo "$CHAVE apagada"
+          fi
+          api -X POST -H 'Content-Type: application/json' -d '{}' "https://api.render.com/v1/services/$id/deploys" | jq -r '"publicação iniciada: \(.id) (\(.status))"'
