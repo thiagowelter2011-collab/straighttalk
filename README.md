@@ -17,11 +17,15 @@ Chat de texto, voz e compartilhamento de tela ao mesmo tempo, com cara de mensag
 
 - **Câmera na chamada:** ligue a webcam na voz; o vídeo de cada pessoa aparece ao lado da tela compartilhada
 - **Amigos:** adicione pelo nome de usuário; depois de aceitar, dá para conversar e ver o status sem estar no mesmo servidor
+- **@menções, fixar e buscar:** `@usuario` com sugestões e aviso para quem foi mencionado; mensagens fixadas e busca (Ctrl+F)
+- **GIFs (opcional):** busca no Tenor com a variável `TENOR_API_KEY`
+- **Moderação:** cargos com cor e permissões (administrar, canais, cargos, mensagens, expulsar, banir), canais privados por cargo, canais só de leitura, lista de banidos
+- **Resumo com IA (opcional):** botão ✨ resume as últimas mensagens da conversa ("o que eu perdi?"), com a variável `ANTHROPIC_API_KEY`
 - **Mensalidade (opcional):** cobrança mensal pelo Mercado Pago (Pix, cartão ou boleto), desligada até configurar a chave. Passo a passo em [`deploy/MENSALIDADE.md`](deploy/MENSALIDADE.md)
 - **Contas** com usuário e senha
 - **Servidores** com convite por link, **canais de texto** (com histórico) e **canais de voz**
 - **Voz** com indicador de quem fala, mudo, desativar áudio e volume por pessoa
-- **Compartilhamento de tela** em modo Jogo (60 fps) ou Texto (nitidez), com áudio do sistema
+- **Compartilhamento de tela** de 720p até 4K, em modo Jogo (60 fps) ou Texto (nitidez), com áudio do sistema, grátis para todos; quem tem internet fraca recebe uma versão 720p automaticamente
 - Escolha de microfone e saída de áudio, supressão de ruído
 - **App para Windows** na pasta [`desktop/`](desktop/)
 

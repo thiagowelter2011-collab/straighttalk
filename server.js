@@ -12,6 +12,7 @@ const { WebSocketServer } = require('ws');
 const { openDb } = require('./lib/db');
 const media = require('./lib/media');
 const { createPayments } = require('./lib/payments');
+const { createAi } = require('./lib/ai');
 
 // Só GIFs do Tenor aparecem como imagem no chat (outros links continuam links)
 const GIF_URL = /^https:\/\/media\d*\.tenor\.com\/[\w\-/.]+\.gif$/;
@@ -55,6 +56,7 @@ function createApp({
   dbUrl = process.env.DATABASE_URL,
   dbToken = process.env.DATABASE_AUTH_TOKEN,
   payments = createPayments(),
+  ai = createAi(),
 } = {}) {
   const db = openDb({ file: dbFile, url: dbUrl, authToken: dbToken });
   const now = () => Date.now();
@@ -708,7 +710,7 @@ function createApp({
   route('GET', '/api/me', async ({ user }) => {
     const billing = { ...billingInfo(user), admin: isAdmin(user) };
     if (billing.locked) return { user, billing, servers: [] };
-    return { user, billing, servers: await listServers(user.id), media: media.clientConfig(user.id), gifs: !!process.env.TENOR_API_KEY };
+    return { user, billing, servers: await listServers(user.id), media: media.clientConfig(user.id), gifs: !!process.env.TENOR_API_KEY, ai: ai.enabled };
   }, { unpaid: true });
 
   /* ---------------- GIFs (Tenor) ---------------- */
@@ -1256,6 +1258,49 @@ function createApp({
     const rows = await db.all(`${DM_SELECT} WHERE ((m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?))
       AND (m.text LIKE ? ESCAPE '\\' OR f.name LIKE ? ESCAPE '\\') ORDER BY m.id DESC LIMIT 50`, user.id, peer.id, peer.id, user.id, like, like);
     return { messages: rows.map(dmPayload) };
+  });
+
+  /* ---------------- Resumo com IA ("o que eu perdi?") ---------------- */
+
+  const summaryUse = new Map(); // userId -> { last, day, count }
+  function summaryQuota(user) {
+    const t = now(), day = new Date(t).toISOString().slice(0, 10);
+    let u = summaryUse.get(user.id);
+    if (!u || u.day !== day) u = { last: 0, day, count: 0 };
+    if (t - u.last < 15000) throw new HttpError(429, 'Espere alguns segundos para pedir outro resumo.');
+    if (u.count >= 40) throw new HttpError(429, 'Limite de 40 resumos por dia. Amanhã tem mais.');
+    u.last = t; u.count++;
+    summaryUse.set(user.id, u);
+  }
+
+  async function summarize(user, where, rows) {
+    if (!ai.enabled) throw new HttpError(404, 'Resumo com IA não configurado.');
+    const lines = rows.reverse().map((r) => ({
+      at: r.created_at, author: r.author,
+      text: (GIF_URL.test(r.text || '') ? '[GIF]' : (r.text || '').slice(0, 600)) + (r.f_name ? ` [arquivo: ${r.f_name}]` : ''),
+    })).filter((l) => l.text.trim());
+    if (lines.length < 3) throw new HttpError(400, 'Ainda tem pouca conversa para resumir.');
+    summaryQuota(user);
+    try {
+      return { summary: await ai.summarize({ where, viewer: user.displayName, lines }), count: lines.length };
+    } catch (err) {
+      console.error(err);
+      throw new HttpError(502, 'A IA não respondeu agora. Tente de novo daqui a pouco.');
+    }
+  }
+
+  route('POST', '/api/channels/:id/summary', async ({ user, params }) => {
+    const c = await requireChannel(Number(params.id), user);
+    if (c.type !== 'text') throw new HttpError(400, 'Canal de voz não tem mensagens.');
+    const rows = await db.all(`${MSG_SELECT} WHERE m.channel_id = ? ORDER BY m.id DESC LIMIT 150`, c.id);
+    const s = await serverRow(c.serverId);
+    return summarize(user, `canal #${c.name} do servidor ${s.name}`, rows);
+  });
+
+  route('POST', '/api/dm/:userId/summary', async ({ user, params }) => {
+    const peer = await requireDmPeer(Number(params.userId), user);
+    const rows = await db.all(`${DM_SELECT} WHERE (m.from_id = ? AND m.to_id = ?) OR (m.from_id = ? AND m.to_id = ?) ORDER BY m.id DESC LIMIT 150`, user.id, peer.id, peer.id, user.id);
+    return summarize(user, `conversa particular com ${peer.displayName}`, rows);
   });
 
   route('POST', '/api/dm/messages/:id/reactions', async ({ user, params, body }) => {

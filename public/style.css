@@ -659,3 +659,11 @@ select { cursor: pointer; }
 @media (hover: none) { .member-more { opacity: 1; } }
 .member-pop { position: fixed; left: auto; top: auto; z-index: 60; min-width: 170px; }
 .readonly-note { display: flex; align-items: center; gap: 8px; justify-content: center; margin: 0 16px 16px; padding: 12px; border-radius: 12px; background: var(--surface-2); color: var(--text-3); font-size: 13px; }
+
+/* Resumo com IA */
+.ai-btn { color: var(--accent); }
+.summary-card { display: grid; gap: 8px; padding: 12px 14px; border-radius: 12px; background: var(--accent-soft); font-size: 13.5px; line-height: 1.45; }
+.summary-card p { margin: 0; }
+.summary-item { position: relative; padding-left: 14px; }
+.summary-item::before { content: ''; position: absolute; left: 2px; top: .6em; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.summary-foot { margin: 8px 2px 0; }

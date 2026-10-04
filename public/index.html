@@ -164,6 +164,7 @@
         <form id="search-form" class="search-form hidden" role="search">
           <input id="search-input" type="search" placeholder="Buscar mensagens" maxlength="100" autocomplete="off">
         </form>
+        <button id="btn-summary" class="icon-btn conv-only ai-btn hidden" title="Resumo com IA: o que eu perdi?" data-icon="sparkles"></button>
         <button id="btn-search" class="icon-btn conv-only" title="Buscar mensagens (Ctrl+F)" data-icon="search"></button>
         <button id="btn-pins" class="icon-btn conv-only" title="Mensagens fixadas" data-icon="pin"></button>
         <button id="btn-members" class="icon-btn" title="Contatos" data-icon="users"></button>
@@ -244,6 +245,14 @@
       <h2>Compartilhar tela</h2>
       <label class="radio"><input type="radio" name="mode" value="motion" checked> <b>Jogo / vídeo</b> <span class="muted">prioriza fluidez (60 fps)</span></label>
       <label class="radio"><input type="radio" name="mode" value="detail"> <b>Texto / código</b> <span class="muted">prioriza nitidez</span></label>
+      <label>Qualidade da tela (grátis para todo mundo)
+        <select id="share-quality">
+          <option value="720">720p</option>
+          <option value="1080" selected>1080p (recomendado)</option>
+          <option value="1440">1440p</option>
+          <option value="source">Original, até 4K (precisa de internet boa)</option>
+        </select>
+      </label>
       <label class="radio"><input type="checkbox" id="share-audio" checked> Incluir áudio do sistema <span class="muted">(se possível)</span></label>
       <menu>
         <button value="cancel" class="btn">Cancelar</button>

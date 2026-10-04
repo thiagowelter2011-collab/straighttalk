@@ -124,10 +124,25 @@
     if (sinkId && typeof el.setSinkId === 'function') el.setSinkId(sinkId).catch(() => {});
   }
 
-  function displayMediaOptions({ mode, audio }) {
+  // Qualidade da tela, para todo mundo (sem plano pago): até 4K. Jogo/vídeo = 60 fps; texto/código = 30 fps com mais nitidez.
+  const SHARE_QUALITY = {
+    '720': { width: 1280, height: 720, motion: 4_000_000, detail: 2_000_000 },
+    '1080': { width: 1920, height: 1080, motion: 6_000_000, detail: 3_000_000 },
+    '1440': { width: 2560, height: 1440, motion: 10_000_000, detail: 5_000_000 },
+    source: { width: 3840, height: 2160, motion: 16_000_000, detail: 8_000_000 },
+  };
+
+  function shareProfile({ mode, quality }) {
+    const q = SHARE_QUALITY[quality] || SHARE_QUALITY['1080'];
     const motion = mode === 'motion';
+    return { width: q.width, height: q.height, fps: motion ? 60 : 30, bitrate: motion ? q.motion : q.detail, motion };
+  }
+
+  function displayMediaOptions(opts) {
+    const { audio } = opts;
+    const p = shareProfile(opts);
     return {
-      video: { frameRate: { ideal: motion ? 60 : 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      video: { frameRate: { ideal: p.fps, max: p.fps }, width: { ideal: p.width }, height: { ideal: p.height } },
       audio: audio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false,
       systemAudio: audio ? 'include' : 'exclude',
       selfBrowserSurface: 'exclude',
@@ -305,6 +320,7 @@
 
     async startShare(opts) {
       this.screenMode = opts.mode;
+      this.screenProfile = shareProfile(opts);
       this.localScreen = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions(opts));
       const [video] = this.localScreen.getVideoTracks();
       video.contentHint = opts.mode === 'motion' ? 'motion' : 'detail';
@@ -322,8 +338,8 @@
           const params = sender.getParameters();
           params.degradationPreference = motion ? 'maintain-framerate' : 'maintain-resolution';
           if (!params.encodings?.length) params.encodings = [{}];
-          params.encodings[0].maxBitrate = motion ? 6_000_000 : 3_000_000;
-          params.encodings[0].maxFramerate = motion ? 60 : 30;
+          params.encodings[0].maxBitrate = this.screenProfile.bitrate;
+          params.encodings[0].maxFramerate = this.screenProfile.fps;
           sender.setParameters(params).catch(() => {});
         }
         return sender;
@@ -523,22 +539,24 @@
       this.room?.switchActiveDevice('audiooutput', sinkId).catch(() => {});
     }
 
-    async startShare({ mode, audio }) {
+    async startShare(opts) {
       const LK = window.LivekitClient;
-      const motion = mode === 'motion';
+      const p = shareProfile(opts);
       const pub = await this.room.localParticipant.setScreenShareEnabled(true, {
-        audio,
-        systemAudio: audio ? 'include' : 'exclude',
+        audio: opts.audio,
+        systemAudio: opts.audio ? 'include' : 'exclude',
         selfBrowserSurface: 'exclude',
-        contentHint: motion ? 'motion' : 'detail',
-        resolution: { width: 1920, height: 1080, frameRate: motion ? 60 : 30 },
+        contentHint: p.motion ? 'motion' : 'detail',
+        resolution: { width: p.width, height: p.height, frameRate: p.fps },
       }, {
-        screenShareEncoding: { maxBitrate: motion ? 6_000_000 : 3_000_000, maxFramerate: motion ? 60 : 30 },
-        degradationPreference: motion ? 'maintain-framerate' : 'maintain-resolution',
+        screenShareEncoding: { maxBitrate: p.bitrate, maxFramerate: p.fps },
+        // Camada extra em 720p: quem tem internet fraca (ou vê a tela pequena) recebe essa, os outros recebem a qualidade cheia
+        simulcast: true,
+        screenShareSimulcastLayers: [new LK.VideoPreset(1280, 720, p.motion ? 1_500_000 : 1_000_000, p.motion ? 30 : 15)],
+        degradationPreference: p.motion ? 'maintain-framerate' : 'maintain-resolution',
       });
       if (!pub?.track) throw Object.assign(new Error('cancelado'), { name: 'NotAllowedError' });
       this.localScreen = new MediaStream([pub.track.mediaStreamTrack]);
-      void LK;
       return this.localScreen.id;
     }
 

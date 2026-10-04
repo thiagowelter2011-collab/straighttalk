@@ -139,6 +139,7 @@ async function start() {
   S.user = me.user;
   S.media = me.media;
   $('#btn-gif').classList.toggle('hidden', !me.gifs);
+  S.ai = !!me.ai;
   S.servers = me.servers;
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
@@ -1046,6 +1047,29 @@ function showSidePanel(title, messages, empty) {
 
 $('#side-close').onclick = () => $('#side-panel').classList.add('hidden');
 
+// Resumo com IA das últimas mensagens da conversa aberta
+$('#btn-summary').onclick = async () => {
+  const conv = currentConv();
+  if (!conv) return;
+  $('#side-title').textContent = 'Resumo com IA';
+  const box = $('#side-list');
+  box.replaceChildren(el('p', { className: 'muted small side-empty', textContent: `Lendo as últimas mensagens de ${conv.name}…` }));
+  $('#side-panel').classList.remove('hidden');
+  try {
+    const { summary, count } = await api('POST', conv.dm ? `/api/dm/${conv.userId}/summary` : `/api/channels/${conv.channel.id}/summary`);
+    if (currentConv()?.key !== conv.key) return;
+    const card = el('div', { className: 'summary-card' });
+    for (const line of summary.split('\n').map((l) => l.trim()).filter(Boolean)) {
+      const p = el('p', { className: line.startsWith('-') || line.startsWith('•') ? 'summary-item' : '' });
+      linkify(p, line.replace(/^[-•]\s*/, '').replace(/\*\*/g, ''), true);
+      card.append(p);
+    }
+    box.replaceChildren(card, el('p', { className: 'muted small summary-foot', textContent: `Feito pela IA com as últimas ${count} mensagens. Pode errar.` }));
+  } catch (err) {
+    box.replaceChildren(el('p', { className: 'muted small side-empty', textContent: err.message }));
+  }
+};
+
 $('#btn-pins').onclick = async () => {
   const conv = currentConv();
   if (!conv) return;
@@ -1554,6 +1578,7 @@ async function toggleShare() {
     return;
   }
   if (!navigator.mediaDevices?.getDisplayMedia) return toast('Este navegador não permite compartilhar a tela.');
+  if (S.settings.shareQuality) $('#share-quality').value = S.settings.shareQuality;
   $('#dlg-share').showModal();
 }
 
@@ -1613,8 +1638,11 @@ $('#dlg-share').addEventListener('close', async () => {
   if ($('#dlg-share').returnValue !== 'ok' || !S.voice) return;
   const mode = $('#dlg-share input[name=mode]:checked').value;
   const audio = $('#share-audio').checked;
+  const quality = $('#share-quality').value;
+  S.settings.shareQuality = quality;
+  localSet('st-settings', JSON.stringify(S.settings));
   try {
-    const id = await S.voice.engine.startShare({ mode, audio });
+    const id = await S.voice.engine.startShare({ mode, audio, quality });
     S.voice.sharing = true;
     S.voice.screenStreamId = id;
     S.screens.set(S.voice.mediaId, { stream: S.voice.engine.localScreen, el: null, local: true });
@@ -1940,6 +1968,7 @@ function renderMain() {
   const title = $('#main-title');
   const inConv = S.view === 'text' || S.view === 'dm';
   document.querySelectorAll('.conv-only').forEach((b) => b.classList.toggle('hidden', !inConv));
+  $('#btn-summary').classList.toggle('hidden', !inConv || !S.ai);
   if (!inConv) { $('#side-panel').classList.add('hidden'); $('#search-form').classList.add('hidden'); }
   $('#view-empty').classList.toggle('hidden', S.view !== 'empty');
   $('#view-text').classList.toggle('hidden', S.view !== 'text' && S.view !== 'dm');

@@ -33,3 +33,6 @@ services:
       # GIFs (opcional): chave da API do Tenor (Google Cloud). Sem ela, o botão de GIF não aparece
       - key: TENOR_API_KEY
         sync: false
+      # Resumo com IA (opcional): chave da API da Anthropic (console.anthropic.com). Sem ela, o botão de resumo não aparece
+      - key: ANTHROPIC_API_KEY
+        sync: false
